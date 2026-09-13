@@ -28,7 +28,7 @@ cd Tool-mionitor-for-dcd-
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+python -m pip install -e .
 cp .env.example .env
 ```
 
@@ -85,15 +85,6 @@ Khi một yêu cầu đang chạy, ứng dụng chỉ giữ yêu cầu mới nh�
 
 Nếu token từng bị commit hoặc công khai, hãy thu hồi/rotate token đó ngay tại nhà cung cấp rồi xoá nó khỏi lịch sử Git trước khi public repository.
 
-## Kiểm tra
-
-Sau khi cài dependency phát triển:
-
-```bash
-source .venv/bin/activate
-python -m pytest
-```
-
 ## Khắc phục sự cố
 
 | Hiện tượng | Cách xử lý |
@@ -108,7 +99,6 @@ python -m pytest
 
 ```text
 src/clip_overlay_ai/  Mã nguồn ứng dụng
-tests/                Bộ kiểm thử pytest
 docs/                 Tài liệu kiến trúc và tài nguyên
 resources/            Tài liệu local của người dùng (không commit)
 .env.example          Mẫu cấu hình không chứa secret hay model cụ thể

@@ -19,11 +19,6 @@ dependencies = [
     "rapidocr_onnxruntime>=1.4.4",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0.0",
-]
-
 [project.scripts]
 clipboard-ai-overlay = "clip_overlay_ai.main:run"
 
@@ -32,6 +27,3 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
