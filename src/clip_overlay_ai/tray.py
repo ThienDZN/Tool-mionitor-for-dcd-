@@ -41,7 +41,7 @@ class TrayController(QObject):
         self._send_text_action = QAction("Send text (R)", self)
         self._send_image_action = QAction("Send clipboard image (A)", self)
         self._toggle_overlay_action = QAction("Toggle overlay (Left Shift)", self)
-        self._update_context_action = QAction("Update subject/context", self)
+        self._update_context_action = QAction("Update subject", self)
         self._refresh_resources_action = QAction("Refresh resources", self)
         self._clear_action = QAction("Clear overlay", self)
         self._quit_action = QAction("Quit", self)

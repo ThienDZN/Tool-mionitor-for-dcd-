@@ -76,20 +76,14 @@ def prompt_for_session_context(
 
     subject, subject_ok = QInputDialog.getText(
         parent,
-        "Mon hoc / Context",
-        "Nhap ten mon hoc hoac chu de lien quan:",
+        "Môn học",
+        "Môn học tên gì?",
         text=initial.subject,
     )
     if not subject_ok:
         return initial
 
-    description, description_ok = QInputDialog.getMultiLineText(
-        parent,
-        "Mo ta bo sung",
-        "Nhap mo ta, de cuong, pham vi can uu tien tim tai lieu va research:",
-        initial.description,
-    )
-    if not description_ok:
-        return initial
-
-    return SessionContext(subject=subject, description=description).normalized()
+    # A single startup question is faster to dismiss before a timed quiz.
+    # Clearing the legacy free-form description also prevents stale context
+    # from silently steering answers after the subject is changed.
+    return SessionContext(subject=subject).normalized()

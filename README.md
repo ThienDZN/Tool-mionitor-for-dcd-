@@ -7,7 +7,8 @@
 - Bật hoặc tắt theo dõi clipboard bằng biểu tượng system tray.
 - Gửi văn bản đang chọn bằng phím `R`, hoặc gửi ảnh trong clipboard bằng phím `A`.
 - Hiển thị phản hồi ngắn trong overlay có thể kéo thả.
-- OCR ảnh cục bộ trước khi gửi; nếu OCR không đọc được ảnh, ứng dụng có thể gửi ảnh đến dịch vụ AI đã cấu hình.
+- Nhận diện các câu được đánh số rõ ràng (`Câu 1`, `Question 2`, …), gửi từng câu độc lập và hiện đáp án theo thứ tự hoàn thành.
+- OCR ảnh cục bộ để hỗ trợ tìm tài liệu và tách nhiều câu; khi không tách chắc chắn, ảnh gốc vẫn được gửi để AI đọc theo bố cục.
 - Tìm trong `resources/` trước; web fallback chỉ được dùng khi bạn chủ động bật.
 - Bỏ qua một số chuỗi nhạy cảm rõ ràng trong văn bản trước khi gửi.
 
@@ -40,9 +41,11 @@ Các tuỳ chọn đáng chú ý:
 | --- | --- | --- |
 | `AUTO_START_MONITORING` | `0` | Chỉ bật theo dõi sau khi bạn chọn trong tray. |
 | `ENABLE_WEB_FALLBACK` | `0` | Cho phép ứng dụng yêu cầu tìm kiếm web khi không tìm thấy tài liệu local. |
-| `MAX_CLIPBOARD_CHARS` | `4000` | Cắt ngắn văn bản clipboard trước khi gửi. |
+| `MAX_CLIPBOARD_CHARS` | `12000` | Cắt ngắn văn bản clipboard trước khi gửi; đủ cho nhiều câu hơn. |
 | `MAX_RESPONSE_CHARS` | `480` | Giới hạn độ dài phản hồi hiển thị. |
 | `REQUEST_TIMEOUT_S` | `40` | Thời gian chờ một yêu cầu mạng, tính bằng giây. |
+| `PER_QUESTION_TIME_BUDGET_S` | `60` | Ngân sách tối đa 1 phút cho một câu, gồm retry và kiểm tra ảnh nếu còn thời gian. |
+| `MAX_PARALLEL_QUESTIONS` | `8` | Số câu tối đa gửi đồng thời khi nhận diện chắc chắn nhiều câu; đây là giới hạn cục bộ, không phải quota nhà cung cấp. |
 
 Để dùng endpoint tương thích riêng, bỏ comment và cấu hình `OPENAI_BASE_URL` trong `.env`. `OPENAI_REASONING_EFFORT` là tuỳ chọn; chỉ đặt nó nếu dịch vụ của bạn hỗ trợ.
 
@@ -52,7 +55,7 @@ Các tuỳ chọn đáng chú ý:
 ./run.sh
 ```
 
-Khi khởi động, ứng dụng hỏi chủ đề và ngữ cảnh để ưu tiên việc tìm tài liệu local. Sau đó biểu tượng tray xuất hiện.
+Khi khởi động, ứng dụng chỉ hỏi một lần: **“Môn học tên gì?”** để ưu tiên tài liệu local. Sau đó biểu tượng tray xuất hiện.
 
 | Thao tác | Kết quả |
 | --- | --- |
@@ -63,7 +66,7 @@ Khi khởi động, ứng dụng hỏi chủ đề và ngữ cảnh để ưu ti
 | `Left Shift` | Ẩn/hiện overlay trên X11. |
 | `Refresh resources` trong tray | Đọc lại tài liệu trong `resources/`. |
 
-Khi một yêu cầu đang chạy, ứng dụng chỉ giữ yêu cầu mới nhất để gửi sau đó. Overlay báo `RUNNING` trong lúc chờ và hiển thị phản hồi hoặc lỗi sau khi hoàn tất.
+Khi một yêu cầu đang chạy, ứng dụng chỉ giữ yêu cầu mới nhất để gửi sau đó. Sau khi bấm `R` hoặc `A`, overlay báo **ĐANG NHẬN DIỆN CÂU HỎI...**; khi nhận ra, ví dụ `Câu 31–34`, nó hiện từng dòng `Câu 31: RUNNING`… Trong lúc chạy, đáp án nào xong trước sẽ được đưa lên đầu, còn các câu chưa xong vẫn hiển thị `RUNNING`. Các câu được xử lý độc lập với số luồng tối đa do `MAX_PARALLEL_QUESTIONS` đặt ra. OCR giờ giữ ảnh tới 2400px và 12.000 ký tự để nhận diện nhiều câu nhỏ hơn; văn bản hỗ trợ `Câu31`, `Câu hỏi 31`, `Question No. 31`, `Q31` và số thứ tự rõ ràng. Văn bản hoặc ảnh mơ hồ vẫn được gửi nguyên khối để tránh tách nhầm đáp án/lựa chọn thành câu hỏi.
 
 ## Tài liệu local
 
@@ -92,7 +95,8 @@ Nếu token từng bị commit hoặc công khai, hãy thu hồi/rotate token đ
 | Báo thiếu cấu hình | Kiểm tra `.env` có hai biến bắt buộc và không để trống; sau đó khởi động lại ứng dụng. |
 | Không thấy tray icon | Dùng desktop session có hỗ trợ system tray. |
 | `R`, `A` hoặc `Left Shift` không hoạt động | Kiểm tra đang dùng X11 và có `DISPLAY`; nếu không, dùng tray menu. |
-| Ứng dụng không phản hồi | Kiểm tra mạng, endpoint cục bộ, quyền token và tăng `REQUEST_TIMEOUT_S` nếu cần. |
+| Báo `429` / rate limit | `MAX_PARALLEL_QUESTIONS=8` chỉ tăng số yêu cầu cục bộ; quota thật do nhà cung cấp quyết định. Ứng dụng tôn trọng `Retry-After` và retry backoff, nhưng nếu vẫn lặp lại hãy giảm giá trị này. |
+| Ứng dụng không phản hồi | Kiểm tra mạng, endpoint cục bộ, quyền token; điều chỉnh `REQUEST_TIMEOUT_S` và `PER_QUESTION_TIME_BUDGET_S` nếu cần. |
 | Không tìm thấy tài liệu mới | Bảo đảm file nằm trong `resources/`, dùng định dạng hỗ trợ, rồi chọn `Refresh resources`. |
 
 ## Cấu trúc chính

@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+*.bak-*
 .venv/
 __pycache__/
 .pytest_cache/

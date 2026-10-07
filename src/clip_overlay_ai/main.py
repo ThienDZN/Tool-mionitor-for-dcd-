@@ -26,7 +26,13 @@ def run() -> int:
     else:
         reasoning_effort = config.reasoning_effort or "provider default"
         _report_status(f"[CONFIG] Model: {config.model}; reasoning: {reasoning_effort}.")
-        _report_status("[CONFIG] Image verification: 2 independent passes for A.")
+        _report_status(
+            f"[CONFIG] Per-question budget: {config.per_question_time_budget_s:g}s; "
+            f"max parallel questions: {config.max_parallel_questions}."
+        )
+        _report_status(
+            "[CONFIG] Image verification: best effort within the per-question time budget."
+        )
 
     _report_status("[STARTUP] Initializing tray, overlay, clipboard, and hotkeys.")
     try:

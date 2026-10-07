@@ -15,8 +15,8 @@ except Exception:  # pragma: no cover - dependency availability is environment-s
 
 
 _MIN_OCR_CONFIDENCE = 0.58
-_MAX_OCR_CHARS = 5000
-_TARGET_OCR_EDGE = 1800
+_MAX_OCR_CHARS = 12000
+_TARGET_OCR_EDGE = 2400
 
 
 @dataclass(slots=True)

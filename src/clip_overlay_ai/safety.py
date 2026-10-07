@@ -21,7 +21,7 @@ _SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         "password-like line",
     ),
 )
-_MAX_IMAGE_EDGE = 1800
+_MAX_IMAGE_EDGE = 2400
 
 
 class ClipboardRejectedError(ValueError):

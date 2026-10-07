@@ -86,6 +86,16 @@ class OverlayWindow(QWidget):
             return
         self._present(timeout_ms=self._config.overlay_duration_ms)
 
+    def show_batch_progress(self, text: str) -> None:
+        """Show completed answers and remaining ``RUNNING`` lines persistently."""
+        self._cached_message = text
+        self._content_label.setText(self._cached_message)
+        self._apply_visual_state("message")
+        if self._manually_hidden:
+            self._hide_timer.stop()
+            return
+        self._present(timeout_ms=None)
+
     def show_error(self, text: str, timeout_ms: int | None = None) -> None:
         self._cached_message = text
         self._content_label.setText(text)
