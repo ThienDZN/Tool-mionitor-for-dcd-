@@ -14,7 +14,7 @@
 
 ## Yêu cầu
 
-- Python 3.12 trở lên.
+- Python 3.12 (chưa hỗ trợ 3.13 trở lên vì `rapidocr_onnxruntime` chỉ có bản cho Python < 3.13). Nếu máy chỉ có Python mới hơn, dùng [uv](https://docs.astral.sh/uv/) để tạo venv 3.12 như bên dưới.
 - Môi trường desktop có system tray.
 - Một tài khoản/dịch vụ AI tương thích với endpoint Responses hoặc Chat Completions.
 - Token truy cập và tên model do **bạn tự cấu hình cục bộ**. Repository không kèm các giá trị này hay file trọng số model.
@@ -26,7 +26,7 @@ Trên Linux, các phím tắt toàn cục (`Left Shift`, `R`, `A`) cần phiên 
 ```bash
 git clone https://github.com/ThienDZN/Tool-mionitor-for-dcd-.git
 cd Tool-mionitor-for-dcd-
-python3 -m venv .venv
+python3.12 -m venv .venv          # hoặc: uv venv --seed --python 3.12 .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e .
