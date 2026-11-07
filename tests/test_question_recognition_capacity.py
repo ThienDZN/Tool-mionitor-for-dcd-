@@ -92,6 +92,27 @@ class QuestionRecognitionCapacityTests(TestCase):
         self.assertFalse(_looks_like_usable_answer("Đáp án đúng: 1-A", question))
         self.assertTrue(_looks_like_usable_answer("Đáp án đúng: GPIO → A; ADC → C", question))
 
+    def test_ocr_options_without_a_space_still_count_as_offered_choices(self) -> None:
+        question = (
+            "GSM la cong nghe chinh su dung cho mang di dong the he nao sau day?\n"
+            "A.3G\nB. 1G\nC.2G\nD. 4G"
+        )
+
+        self.assertTrue(_looks_like_usable_answer("Đáp án đúng: C. 2G", question))
+
+    def test_unaccented_noi_in_a_stem_does_not_make_it_a_matching_task(self) -> None:
+        # OCR renders "tiếng nói" as "tieng noi"; the bare "noi" used to match
+        # the matching-question vocabulary, so every valid letter answer was
+        # rejected and retried until the overlay showed a generic AI error.
+        question = (
+            "Uu diem cua he thong di dong 2G ma he thong 1G khong co la?\n"
+            "A. S6 hoa dir lieu\nB. Ho tro song cong\n"
+            "C. Truyen dir lieu turong tur\nD. Truyen dugc tieng noi"
+        )
+
+        self.assertEqual(detect_question_type(question), "single_choice")
+        self.assertTrue(_looks_like_usable_answer("Đáp án đúng: A. Số hóa dữ liệu", question))
+
     def test_multi_answer_connectors_are_normalized_and_accepted(self) -> None:
         question = (
             "Chọn các đáp án đúng, có thể chọn nhiều.\n"

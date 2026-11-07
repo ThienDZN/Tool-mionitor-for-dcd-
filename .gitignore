@@ -10,3 +10,4 @@ state/
 resources/*
 !resources/README.md
 *.egg-info/
+*.ses

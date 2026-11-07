@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -26,6 +27,14 @@ from .tray import TrayController
 
 
 _MAX_VISIBLE_RESPONSE_CHARS = 480
+
+# A reply can already start with the question heading it was shown (for example
+# when one prompt carried the whole copied block). Prepending the label again
+# produced "Câu 9: Câu 9: ...".
+_ECHOED_LABEL_PATTERN = re.compile(
+    r"(?i)^[ \t]*(?:(?:câu|cau|question)(?:[ \t]+(?:hỏi|hoi|số|so))?[ \t]*|q[ \t.\#]*)"
+    r"\d{1,4}[ \t]*(?:[:.)\-–—][ \t]*)+"
+)
 
 
 def _fingerprint(value: str | bytes) -> str:
@@ -159,6 +168,11 @@ class AnswerBatch:
             answer = text.removeprefix(answer_prefix).strip()
             if answer:
                 text = answer
+        # Drop a heading the model echoed from the prompt before adding ours, so
+        # the overlay never shows "Câu 9: Câu 9: ...".
+        echoed_removed = _ECHOED_LABEL_PATTERN.sub("", text, count=1).strip()
+        if echoed_removed:
+            text = echoed_removed
         return f"{label}: {text}"
 
     def record_completion(self, index: int, line: str) -> bool:

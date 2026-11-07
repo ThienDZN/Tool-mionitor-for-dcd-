@@ -159,6 +159,34 @@ class MultiQuestionProgressTests(TestCase):
             "Câu 31: B. Hai",
         )
 
+    def test_echoed_question_heading_is_not_duplicated_in_the_overlay(self) -> None:
+        batch = AnswerBatch(
+            detected_questions=[DetectedQuestion(number=9, label="Câu 9", text="Q9")]
+        )
+
+        self.assertEqual(
+            batch.result_line(0, "Đáp án đúng: Câu 9: D. Tiếng nói; Câu 10: D. GSM"),
+            "Câu 9: D. Tiếng nói; Câu 10: D. GSM",
+        )
+        self.assertEqual(
+            batch.result_line(0, "Đáp án đúng: D. Tiếng nói"),
+            "Câu 9: D. Tiếng nói",
+        )
+
+    def test_single_heading_that_covers_later_questions_stays_unlabelled(self) -> None:
+        # Only the first heading is named; the rest are bare numbered headings.
+        # Labelling the whole block "Câu 9" made the model answer every question
+        # under that number, producing "Câu 9: Câu 9: ..." in the overlay.
+        questions = split_numbered_questions(
+            "Câu 9: Thế hệ đầu tiên của 1G truyền được?\n"
+            "A. Hình ảnh\nB. Tiếng nói\n"
+            "10: Hệ thống 2G dùng công nghệ nào?\nA. LTE\nB. GSM\n"
+            "11: GSM dùng cho mạng nào?\nA. 3G\nB. 2G"
+        )
+
+        self.assertEqual(len(questions), 1)
+        self.assertIsNone(questions[0].label)
+
     def test_provider_error_details_are_not_shown_in_the_overlay(self) -> None:
         provider_detail = "gateway echoed copied text: secret-like-value"
 

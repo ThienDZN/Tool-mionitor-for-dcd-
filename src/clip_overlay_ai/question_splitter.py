@@ -44,6 +44,13 @@ _INLINE_EXPLICIT_HEADING_PATTERN = re.compile(
 _BARE_HEADING_PATTERN = re.compile(r"(?im)^[ \t]*(?P<number>\d{1,4})[.):][ \t]+")
 _OPTION_AFTER_BARE_HEADING_PATTERN = re.compile(r"(?i)^[ \t]*[a-h][.)][ \t]+")
 _NAMED_HEADING_WORD_PATTERN = re.compile(r"(?i)\b(?:câu|cau|question|q)\b")
+# Additional question headings inside a block that started with one named
+# heading. Either a bare numbered heading on its own line, or another named
+# heading appearing mid-text after the first one was consumed.
+_FURTHER_QUESTION_MARKER_PATTERN = re.compile(
+    r"(?im)(?:^[ \t]*\d{1,4}[.):][ \t]+\S"
+    r"|\b(?:câu|cau|question)[ \t]*\d{1,4}[ \t]*(?:[:.)\-–—]|$))"
+)
 _QUESTION_CUE_PATTERN = re.compile(
     r"(?i)(\?|\b(?:what|which|when|where|who|why|how|select|choose|complete|fill)\b|"
     r"(?:hãy|hay|chọn|chon|điền|dien|tính|tìm|tim|giải|giai|viết|viet|nêu|neu|"
@@ -83,6 +90,13 @@ def split_numbered_questions(text: str) -> list[DetectedQuestion]:
 
     if _is_safe_single_explicit_question(normalized, explicit_matches, explicit_questions):
         return explicit_questions
+
+    # One named heading covered the whole payload, but the block still holds
+    # further numbered questions. Splitting on those would drop the first one,
+    # and labelling the block with the single heading misled the model into
+    # answering every question under that number. Send the payload unlabelled.
+    if _is_single_heading_covering_more_questions(explicit_matches, explicit_questions):
+        return [_whole_question(normalized)]
 
     bare_matches = list(_BARE_HEADING_PATTERN.finditer(normalized))
     questions = _questions_from_matches(normalized, bare_matches)
@@ -124,7 +138,20 @@ def _is_safe_single_explicit_question(
     # uses a heading word (for example ``Câu lỗi này...``) is ambiguous, so
     # leave the complete payload intact rather than assigning a false label.
     prefix = text[: matches[0].start()].strip()
-    return not _NAMED_HEADING_WORD_PATTERN.search(prefix)
+    if _NAMED_HEADING_WORD_PATTERN.search(prefix):
+        return False
+    # A heading must not swallow the questions that follow it, otherwise the
+    # model answers the whole block under that one number.
+    return not _FURTHER_QUESTION_MARKER_PATTERN.search(questions[0].text)
+
+
+def _is_single_heading_covering_more_questions(
+    matches: list[re.Match[str]],
+    questions: list[DetectedQuestion],
+) -> bool:
+    if len(matches) != 1 or len(questions) != 1:
+        return False
+    return bool(_FURTHER_QUESTION_MARKER_PATTERN.search(questions[0].text))
 
 
 def _has_distinct_increasing_numbers(questions: list[DetectedQuestion]) -> bool:

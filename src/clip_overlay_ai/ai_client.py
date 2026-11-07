@@ -131,7 +131,13 @@ def _offered_option_letters(question_text: str) -> set[str]:
     """Letters of the choices actually listed in the question text."""
     if not question_text:
         return set()
-    return {match.upper() for match in re.findall(r"(?im)^\s*([A-H])[\.\)]\s+\S+", question_text)}
+    # OCR frequently drops the space after the marker ("A.LTE", "C.2G"). Requiring
+    # whitespace there silently removed those letters from the offered set and made
+    # a correct answer look invalid.
+    return {
+        match.upper()
+        for match in re.findall(r"(?im)^[ \t]*([A-H])[\.\)][ \t]*\S+", question_text)
+    }
 
 
 def _answer_matches_offered_options(answer_body: str, question_text: str) -> bool:
@@ -142,6 +148,9 @@ def _answer_matches_offered_options(answer_body: str, question_text: str) -> boo
     also catches a model answering with an option that does not exist.
     """
     if detect_question_type(question_text) == "matching":
+        # Keep the strict pair check: a partial "1-A" for two cards is not a
+        # usable answer. The detector itself was narrowed so ordinary stems no
+        # longer reach this branch.
         return _matching_answer_covers_numbered_cards(answer_body, question_text)
 
     offered = _offered_option_letters(question_text)
@@ -294,10 +303,17 @@ _FILL_IN_HINT_PATTERN = re.compile(
     r"(?i)(_{2,}|\.{3,}|fill in|điền|dien vao|điền vào|blank|complete the sentence|"
     r"complete the paragraph|chỗ trống|cho trong)"
 )
+# Only explicit matching vocabulary is listed. The unaccented word "noi" also
+# matches "nói" (speak) and "nối tiếp" (serial) in OCR text, and English filler
+# such as "order"/"card" shows up in ordinary stems; both used to misclassify
+# multiple-choice questions as matching, which then rejected every valid
+# single-letter answer. "Nối" therefore only counts with a card-like object.
 _MATCHING_HINT_PATTERN = re.compile(
-    r"(?i)(match|matching|drag|drop|drag and drop|pair|ghep|ghép|ghep cap|ghép cặp|"
-    r"noi|nối|noi the|nối thẻ|keo tha|kéo thả|reorder|order|"
-    r"click vao the|click vào thẻ|click card|chon the|chọn thẻ|flashcard|card)"
+    r"(?i)(match(?:ing)?\b|drag(?: and)? drop|pair(?:ing)?\b|"
+    r"ghep|ghép|ghep cap|ghép cặp|ghép đôi|ghep doi|"
+    r"(?:noi|nối)[ \t]+(?:cac[ \t]+|các[ \t]+)?(?:the|thẻ|cot|cột|cap|cặp)(?![a-zà-ỹ])|"
+    r"keo tha|kéo thả|reorder|"
+    r"click vao the|click vào thẻ|click card|chon the|chọn thẻ|flashcard)"
 )
 _EXPLANATION_MARKERS = (
     "giai thich:",
