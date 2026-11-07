@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 
 from PySide6.QtWidgets import QApplication
@@ -12,8 +13,22 @@ def _report_status(message: str) -> None:
     print(message, flush=True)
 
 
+def _prefer_xwayland() -> None:
+    """Run Qt through XWayland on Wayland sessions.
+
+    Native Wayland turns the overlay into a normal app window (dock/Alt-Tab
+    entry, no fixed position, no stay-on-top). XWayland keeps it a floating
+    overlay. Respect an explicit QT_QPA_PLATFORM chosen by the user.
+    """
+    if not sys.platform.startswith("linux") or os.getenv("QT_QPA_PLATFORM"):
+        return
+    if os.getenv("XDG_SESSION_TYPE", "").strip().lower() == "wayland" and os.getenv("DISPLAY"):
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+
+
 def run() -> int:
     _report_status("[STARTUP] Starting Clipboard AI Overlay.")
+    _prefer_xwayland()
     app = QApplication(sys.argv)
     app.setApplicationName("Clipboard AI Overlay")
     app.setQuitOnLastWindowClosed(False)

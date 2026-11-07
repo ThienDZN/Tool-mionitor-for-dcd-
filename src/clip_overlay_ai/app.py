@@ -330,7 +330,8 @@ class ClipboardOverlayController(QObject):
         self._overlay.show_error("Khong co anh trong clipboard de gui.", timeout_ms=4000)
 
     def toggle_overlay_visibility(self) -> None:
-        self._overlay.toggle_visibility()
+        visible = self._overlay.toggle_visibility()
+        self._status_reporter(f"[OVERLAY] {'Shown' if visible else 'Hidden'}.")
 
     def update_session_context(self, prompt_even_if_existing: bool = False) -> None:
         current = self._context_store.load()

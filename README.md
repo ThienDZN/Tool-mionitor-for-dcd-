@@ -19,7 +19,13 @@
 - Một tài khoản/dịch vụ AI tương thích với endpoint Responses hoặc Chat Completions.
 - Token truy cập và tên model do **bạn tự cấu hình cục bộ**. Repository không kèm các giá trị này hay file trọng số model.
 
-Trên Linux, các phím tắt toàn cục (`Left Shift`, `R`, `A`) cần phiên X11 và biến `DISPLAY`. Nếu dùng Wayland hoặc phím tắt không hoạt động, bạn vẫn có thể sử dụng các mục tương ứng trong tray menu.
+Trên Linux, các phím tắt toàn cục (`Left Shift`, `R`, `A`):
+
+- X11: dùng `pynput`, cần biến `DISPLAY`.
+- Wayland: đọc bàn phím trực tiếp từ `/dev/input` qua `evdev`. User phải có quyền đọc thiết bị này: `sudo usermod -aG input $USER`, rồi đăng xuất và đăng nhập lại. Lưu ý: mọi chương trình chạy dưới user đó đều đọc được phím bấm.
+- Trên Wayland, ứng dụng tự chạy Qt qua XWayland (`QT_QPA_PLATFORM=xcb`), để overlay là lớp nổi chứ không thành một cửa sổ app riêng trên dock/Alt-Tab. Đặt `QT_QPA_PLATFORM` thủ công nếu muốn ghi đè.
+
+Nếu phím tắt không hoạt động, bạn vẫn dùng được các mục tương ứng trong tray menu.
 
 ## Cài đặt
 
@@ -94,7 +100,7 @@ Nếu token từng bị commit hoặc công khai, hãy thu hồi/rotate token đ
 | --- | --- |
 | Báo thiếu cấu hình | Kiểm tra `.env` có hai biến bắt buộc và không để trống; sau đó khởi động lại ứng dụng. |
 | Không thấy tray icon | Dùng desktop session có hỗ trợ system tray. |
-| `R`, `A` hoặc `Left Shift` không hoạt động | Kiểm tra đang dùng X11 và có `DISPLAY`; nếu không, dùng tray menu. |
+| `R`, `A` hoặc `Left Shift` không hoạt động | Xem dòng `[STARTUP] Global hotkeys unavailable: ...` trong terminal. Trên Wayland, thường do user chưa thuộc nhóm `input`. |
 | Báo `429` / rate limit | `MAX_PARALLEL_QUESTIONS=8` chỉ tăng số yêu cầu cục bộ; quota thật do nhà cung cấp quyết định. Ứng dụng tôn trọng `Retry-After` và retry backoff, nhưng nếu vẫn lặp lại hãy giảm giá trị này. |
 | Ứng dụng không phản hồi | Kiểm tra mạng, endpoint cục bộ, quyền token; điều chỉnh `REQUEST_TIMEOUT_S` và `PER_QUESTION_TIME_BUDGET_S` nếu cần. |
 | Không tìm thấy tài liệu mới | Bảo đảm file nằm trong `resources/`, dùng định dạng hỗ trợ, rồi chọn `Refresh resources`. |

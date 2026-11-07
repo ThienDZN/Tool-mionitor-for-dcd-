@@ -30,6 +30,9 @@ class OverlayWindow(QWidget):
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.WindowDoesNotAcceptFocus
+            # On X11/XWayland: unmanaged window, so it never shows up as a
+            # separate app in the dock, taskbar, or Alt-Tab.
+            | Qt.WindowType.X11BypassWindowManagerHint
         )
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -221,23 +224,25 @@ class OverlayWindow(QWidget):
         )
 
     def _palette_for_state(self, state: str) -> dict[str, str]:
+        # No bubble: fully transparent background, faint mid-grey text that
+        # stays readable on both light and dark backgrounds.
         if state == "running":
             return {
-                "background": "rgba(255, 255, 255, 28)",
-                "border": "rgba(178, 178, 178, 10)",
-                "text": "rgba(98, 98, 98, 88)",
+                "background": "rgba(0, 0, 0, 0)",
+                "border": "rgba(0, 0, 0, 0)",
+                "text": "rgba(128, 128, 128, 120)",
             }
         if state == "message":
             return {
-                "background": "rgba(255, 255, 255, 38)",
-                "border": "rgba(176, 176, 176, 12)",
-                "text": "rgba(76, 76, 76, 112)",
+                "background": "rgba(0, 0, 0, 0)",
+                "border": "rgba(0, 0, 0, 0)",
+                "text": "rgba(128, 128, 128, 150)",
             }
         if state == "error":
             return {
-                "background": "rgba(255, 251, 251, 42)",
-                "border": "rgba(188, 164, 164, 14)",
-                "text": "rgba(112, 88, 88, 116)",
+                "background": "rgba(0, 0, 0, 0)",
+                "border": "rgba(0, 0, 0, 0)",
+                "text": "rgba(170, 100, 100, 150)",
             }
         return {
             "background": "rgba(255, 255, 255, 10)",
