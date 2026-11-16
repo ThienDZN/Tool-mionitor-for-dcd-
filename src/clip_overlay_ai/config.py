@@ -40,6 +40,9 @@ class AppConfig:
     auto_start_monitoring: bool = True
     per_question_time_budget_s: float = 60.0
     max_parallel_questions: int = 8
+    max_requests_per_minute: int = 120
+    overlay_text_alpha: int = 100
+    image_verification: bool = True
 
     def readiness_issues(self) -> list[str]:
         issues: list[str] = []
@@ -55,6 +58,8 @@ class AppConfig:
             issues.append("Invalid PER_QUESTION_TIME_BUDGET_S")
         if self.max_parallel_questions <= 0:
             issues.append("Invalid MAX_PARALLEL_QUESTIONS")
+        if self.max_requests_per_minute < 0:
+            issues.append("Invalid MAX_REQUESTS_PER_MINUTE")
         return issues
 
 
@@ -103,6 +108,14 @@ def _positive_int_from_env(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _non_negative_int_from_env(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
 def load_config() -> AppConfig:
     project_root = _project_root()
     # This desktop app is configured through its project-local .env file.  It
@@ -135,4 +148,7 @@ def load_config() -> AppConfig:
         auto_start_monitoring=os.getenv("AUTO_START_MONITORING", "1").strip().lower() not in {"0", "false", "no"},
         per_question_time_budget_s=_positive_float_from_env("PER_QUESTION_TIME_BUDGET_S", 60.0),
         max_parallel_questions=_positive_int_from_env("MAX_PARALLEL_QUESTIONS", 8),
+        max_requests_per_minute=_non_negative_int_from_env("MAX_REQUESTS_PER_MINUTE", 120),
+        image_verification=os.getenv("IMAGE_VERIFICATION", "1").strip().lower() not in {"0", "false", "no"},
+        overlay_text_alpha=min(255, max(20, _non_negative_int_from_env("OVERLAY_TEXT_ALPHA", 100))),
     )

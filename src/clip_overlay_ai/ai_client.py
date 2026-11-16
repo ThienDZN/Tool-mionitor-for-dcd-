@@ -4,7 +4,9 @@ import json
 import math
 import random
 import re
+import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from html import escape
@@ -277,6 +279,58 @@ def _parse_retry_after_seconds(value: str | None) -> float | None:
     if not math.isfinite(seconds) or seconds < 0:
         return None
     return seconds
+
+
+class RequestLimiter:
+    """Process-wide cap on outgoing API requests.
+
+    Per-question retry backoff cannot stop eight parallel workers from jointly
+    exceeding a provider quota. This limiter keeps a sliding one-minute window
+    shared by every worker and also holds all workers back after a 429, so one
+    rate-limit reply slows the whole app instead of only the question that saw it.
+    """
+
+    _WINDOW_S = 60.0
+    _MAX_PENALTY_S = 30.0
+
+    def __init__(
+        self,
+        per_minute: int,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._per_minute = per_minute
+        self._clock = clock
+        self._sleep = sleep
+        self._stamps: deque[float] = deque()
+        self._blocked_until = 0.0
+        self._lock = threading.Lock()
+
+    def acquire(self, deadline: float | None = None) -> None:
+        """Block until a request may start; never wait past ``deadline``."""
+        while True:
+            with self._lock:
+                now = self._clock()
+                while self._stamps and now - self._stamps[0] >= self._WINDOW_S:
+                    self._stamps.popleft()
+                wait = max(0.0, self._blocked_until - now)
+                if wait == 0.0:
+                    if self._per_minute <= 0 or len(self._stamps) < self._per_minute:
+                        self._stamps.append(now)
+                        return
+                    wait = self._WINDOW_S - (now - self._stamps[0])
+            remaining = _remaining_seconds(deadline)
+            if remaining is not None and wait >= remaining:
+                raise GatewayRequestError(
+                    "The per-question time budget was exhausted waiting for the request rate limit."
+                )
+            self._sleep(min(max(wait, 0.01), 1.0))
+
+    def penalize(self, seconds: float | None) -> None:
+        """Hold every worker back after the provider answered 429."""
+        delay = min(self._MAX_PENALTY_S, seconds if seconds is not None else 1.0)
+        with self._lock:
+            self._blocked_until = max(self._blocked_until, self._clock() + delay)
 _MULTI_CHOICE_AT_START_PATTERN = re.compile(
     rf"^\s*([A-H](?:\s*{_CHOICE_SEPARATOR_PATTERN}\s*[A-H])+)\s*[\.\):\-]?\s*(.*)$",
     re.IGNORECASE,
@@ -363,6 +417,30 @@ def _rejects_max_completion_tokens(message: str) -> bool:
     )
 
 
+_OPTION_BLOCK_START_PATTERN = re.compile(r"(?im)^[ \t]*A[\.\)][ \t]*\S")
+
+
+def count_option_blocks(text: str) -> int:
+    """Number of separate A/B/C/D option lists, i.e. likely questions in a block.
+
+    Used when a screenshot or paste holds several questions with no "Câu N"
+    headings, so the splitter cannot separate them and the model has to be told
+    how many answers to give.
+    """
+    return len(_OPTION_BLOCK_START_PATTERN.findall(text or ""))
+
+
+def _multi_question_hint(text: str) -> str:
+    count = count_option_blocks(text)
+    if count < 2:
+        return ""
+    return (
+        f"\n\nNội dung có {count} câu hỏi (mỗi câu có bộ lựa chọn A, B, C... riêng). "
+        f"Phải trả lời đủ {count} đáp án, lần lượt theo thứ tự xuất hiện, "
+        "ngăn cách bằng dấu chấm phẩy (;), mỗi đáp án theo đúng mẫu của loại câu đó."
+    )
+
+
 def is_multiple_choice_prompt(text: str) -> bool:
     return len(_MULTIPLE_CHOICE_PATTERN.findall(text)) >= 2
 
@@ -413,8 +491,75 @@ def _looks_like_plan_narration(text: str) -> bool:
     return bool(_PLAN_PREAMBLE_PATTERN.search(text))
 
 
-def normalize_answer_output(text: str) -> str:
+_NUMBERED_CARD_TEXT_PATTERN = re.compile(r"^\s*(\d{1,4})[.)]\s+(.+?)\s*$")
+_ARROW_PAIR_PATTERN = re.compile(r"^(.*?)\s*(?:→|->)\s*([A-H])\b")
+
+
+def _numbered_cards(question_text: str) -> dict[int, str]:
+    """Numbered cards listed before the A-H option block, or {} if not a card prompt."""
+    cards: dict[int, str] = {}
+    for line in question_text.splitlines():
+        if _MULTIPLE_CHOICE_PATTERN.match(line):
+            break
+        match = _NUMBERED_CARD_TEXT_PATTERN.match(line)
+        if match:
+            cards[int(match.group(1))] = match.group(2)
+    return cards if len(cards) >= 2 else {}
+
+
+def _compact_matching_pairs(body: str, question_text: str) -> str | None:
+    """Turn "WIDS → B. long text; ..." into "1-B, 2-A" for numbered-card prompts.
+
+    Long semantic pairs overflow the overlay's character limit and get cut. The
+    rewrite is only done when every pair maps unambiguously to a numbered card;
+    otherwise the model's own wording is kept.
+    """
+    cards = _numbered_cards(question_text)
+    if not cards:
+        return None
+
+    def norm(value: str) -> str:
+        return re.sub(r"\s+", " ", value).strip(" .:").casefold()
+
+    pairs: dict[int, str] = {}
+    for segment in re.split(r"[;\n]", body):
+        segment = segment.strip()
+        if not segment:
+            continue
+        match = _ARROW_PAIR_PATTERN.match(segment)
+        if not match:
+            return None
+        left, letter = match.group(1).strip(), match.group(2).upper()
+        number: int | None = None
+        name = left
+        lead = re.match(r"^(\d{1,4})[.)]?\s*(.*)$", left)
+        if lead and int(lead.group(1)) in cards and lead.group(2):
+            number, name = int(lead.group(1)), lead.group(2)
+        if number is None:
+            exact = [n for n, card in cards.items() if norm(card) == norm(name)]
+            loose = [
+                n for n, card in cards.items()
+                if len(norm(name)) >= 3 and (norm(name) in norm(card) or norm(card) in norm(name))
+            ]
+            candidates = exact or loose
+            if len(candidates) != 1:
+                return None
+            number = candidates[0]
+        if number in pairs:
+            return None
+        pairs[number] = letter
+    if len(pairs) < 2:
+        return None
+    return ", ".join(f"{number}-{letter}" for number, letter in sorted(pairs.items()))
+
+
+def normalize_answer_output(text: str, question_text: str = "") -> str:
     compact = _extract_answer_body(text)
+
+    if question_text:
+        compacted = _compact_matching_pairs(_ANSWER_PREFIX_PATTERN.sub("", compact).strip(), question_text)
+        if compacted:
+            return f"{_ANSWER_PREFIX} {compacted}"
 
     lowered = compact.lower()
     for marker in _EXPLANATION_MARKERS:
@@ -465,6 +610,8 @@ def build_user_message(
         "điền từ hoặc câu trả lời ngắn -> 'Đáp án đúng: <đáp án đầy đủ>'; "
         "nối thẻ, ghép cặp, click thẻ, matching -> 'Đáp án đúng: <cặp đúng ngắn gọn, ví dụ 1-A, 2-C, 3-B>'. "
         "Với chọn nhiều hoặc nối thẻ, kiểm tra toàn bộ lựa chọn/thẻ trước khi trả lời; không được chỉ trả về phần tử đầu tiên."
+        " Nếu nội dung có nhiều câu hỏi không đánh số, trả lời lần lượt từng câu theo đúng thứ tự, "
+        "ngăn cách đáp án của các câu bằng dấu chấm phẩy (;)."
     )
     context_block = _build_session_context_block(session_context)
     resources_block = _build_resources_block(resource_hits)
@@ -492,6 +639,7 @@ def build_user_message(
             f"{resources_block}"
             f"{web_block}\n\n"
             "Ảnh chụp màn hình câu hỏi được gửi kèm theo. Hãy đọc kỹ ảnh rồi chỉ trả về đáp án đúng."
+            f"{_multi_question_hint(recognized_text or '')}"
             f"{ocr_block}"
         )
 
@@ -508,7 +656,7 @@ def build_user_message(
         f"{base_instruction}\n\n{type_instruction}\n\n"
         f"{context_block}"
         f"{resources_block}"
-        f"{web_block}\n\n{source_label}\n"
+        f"{web_block}{_multi_question_hint(payload.text)}\n\n{source_label}\n"
         f"{payload.text}{suffix}"
     )
 
@@ -522,7 +670,11 @@ def _question_type_instruction(question_type: str) -> str:
             "chỉ trả về tất cả chữ cái đúng theo thứ tự, cách nhau bởi dấu phẩy."
         )
     if question_type == "fill_in":
-        return "Loại câu hỏi nhận diện được: điền từ hoặc trả lời ngắn. Trả về đúng phần cần điền, không giải thích."
+        return (
+            "Loại câu hỏi nhận diện được: điền từ hoặc trả lời ngắn. Trả về đúng phần cần điền, không giải thích. "
+            "Nếu chỗ trống nằm cạnh phần đã in sẵn (ví dụ '802.11___', '______driving', '___-ng'), "
+            "chỉ trả về phần còn thiếu, không lặp lại phần đã in."
+        )
     if question_type == "matching":
         return (
             "Loại câu hỏi nhận diện được: nối thẻ, ghép cặp, click thẻ hoặc các dropdown matching. "
@@ -569,12 +721,14 @@ class OpenAIResponsesClient:
     resource_library: ResourceLibrary | None = field(default=None, repr=False)
     status_reporter: Callable[[str], None] | None = field(default=None, repr=False)
     _ocr_engine: ImageOCREngine = field(default_factory=ImageOCREngine, init=False, repr=False)
+    _limiter: RequestLimiter | None = field(default=None, init=False, repr=False)
 
     def _report(self, message: str) -> None:
         if self.status_reporter is not None:
             self.status_reporter(message)
 
     def __post_init__(self) -> None:
+        self._limiter = RequestLimiter(self.config.max_requests_per_minute)
         if self.session_context_store is None:
             self.session_context_store = SessionContextStore(self.config.session_context_path)
         if self.resource_library is None:
@@ -659,42 +813,60 @@ class OpenAIResponsesClient:
             # change which questions are sent to the service.
             callback(list(questions))
 
-    def ask_prepared(self, prepared: PreparedQuestion) -> str:
-        """Perform bounded network work for one already-prepared question."""
+    def ask_prepared(
+        self,
+        prepared: PreparedQuestion,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> str:
+        """Perform bounded network work for one already-prepared question.
+
+        ``on_progress`` receives the same ``[RETRY]``/``[VERIFY]`` messages as the
+        status reporter, but only for this question, so a UI can show them next
+        to the right question.
+        """
+        def report(message: str) -> None:
+            self._report(message)
+            if on_progress is not None:
+                on_progress(message)
+
+        question_text = prepared.question_text
         deadline = time.monotonic() + self.config.per_question_time_budget_s
         answer = self._ask_with_retry(
             prepared.payload,
             prepared.user_message,
             prepared.allow_web_search,
-            prepared.question_text,
+            question_text,
             deadline=deadline,
+            report=report,
         )
-        if prepared.original_image is None:
-            return normalize_answer_output(answer)
+        if prepared.original_image is None or not self.config.image_verification:
+            return normalize_answer_output(answer, question_text)
 
         # A second independent pass improves single-image accuracy, but it is
         # never allowed to extend the per-question deadline.  Unlike the old
         # path, it always sends the original image rather than OCR text.
         if (_remaining_seconds(deadline) or 0.0) < _MIN_IMAGE_VERIFICATION_SECONDS:
             self._report("[VERIFY] Skipping image verification; not enough time remains.")
-            return normalize_answer_output(answer)
+            return normalize_answer_output(answer, question_text)
 
         verification_message = self._build_image_verification_message(prepared.user_message, answer)
+        report("[VERIFY] Re-checking the original image.")
         try:
             verified_answer = self._ask_with_retry(
                 prepared.original_image,
                 verification_message,
                 allow_web_search=False,
-                question_text=prepared.question_text,
+                question_text=question_text,
                 deadline=deadline,
+                report=report,
             )
         except GatewayRequestError:
             # Verification is an accuracy improvement, never a reason to hide
             # an already usable first answer. This also keeps a flaky second
             # request from violating the one-minute interaction goal.
             self._report("[VERIFY] Image verification unavailable; keeping the first answer.")
-            return normalize_answer_output(answer)
-        return normalize_answer_output(verified_answer)
+            return normalize_answer_output(answer, question_text)
+        return normalize_answer_output(verified_answer, question_text)
 
     def _prepare_text_questions(
         self,
@@ -796,11 +968,12 @@ class OpenAIResponsesClient:
         allow_web_search: bool,
         question_text: str = "",
         deadline: float | None = None,
+        report: Callable[[str], None] | None = None,
     ) -> str:
         """Ask until the reply is a usable answer, a permanent error appears, or attempts run out."""
         return _ask_until_usable(
             lambda: self._ask_once(payload, user_message, allow_web_search, deadline=deadline),
-            report=self._report,
+            report=report or self._report,
             question_text=question_text,
             deadline=deadline,
         )
@@ -1042,6 +1215,8 @@ class OpenAIResponsesClient:
         payload: dict[str, Any],
         deadline: float | None = None,
     ) -> dict[str, Any]:
+        if self._limiter is not None:
+            self._limiter.acquire(deadline)
         timeout = self._timeout_for_deadline(deadline)
         try:
             with httpx.Client(timeout=timeout, follow_redirects=True) as client:
@@ -1057,10 +1232,13 @@ class OpenAIResponsesClient:
             raise GatewayRequestError("Connection error.") from exc
 
         if response.status_code >= 400:
+            retry_after = _parse_retry_after_seconds(response.headers.get("Retry-After"))
+            if response.status_code == 429 and self._limiter is not None:
+                self._limiter.penalize(retry_after)
             raise GatewayRequestError(
                 self._extract_error_message(response.text, fallback=f"HTTP {response.status_code}"),
                 status_code=response.status_code,
-                retry_after_s=_parse_retry_after_seconds(response.headers.get("Retry-After")),
+                retry_after_s=retry_after,
             )
 
         try:

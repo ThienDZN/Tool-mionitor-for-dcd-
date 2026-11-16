@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QClipboard, QGuiApplication
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
@@ -47,6 +47,40 @@ def _fingerprint(value: str | bytes) -> str:
 # the same clipboard re-read by the toolkit). Only that burst is deduplicated;
 # re-sending the same content later in the session stays possible.
 _DEDUP_WINDOW_S = 8.0
+# Only show the running clock once a question is noticeably slow; a counter on
+# every fast question would just be visual noise.
+_SHOW_ELAPSED_AFTER_S = 5.0
+_PROGRESS_TICK_MS = 1000
+_RETRY_NOTE_PATTERN = re.compile(r"\[RETRY\]\s*Attempt\s+(\d+)/(\d+)")
+
+
+def _answer_per_line(text: str) -> str:
+    """Show an unlabeled multi-part answer one part per line.
+
+    When several questions arrive in one block with no "Câu N" headings, the
+    model separates their answers with ";". Splitting those onto their own lines
+    keeps them readable. Parts are numbered by question order, except when any
+    part is a pair ("X → B"): then numbering would clash with the card numbers.
+    """
+    prefix = "Đáp án đúng:"
+    body = text.removeprefix(prefix).strip() if text.startswith(prefix) else text
+    parts = [part.strip() for part in re.split(r";\s*", body) if part.strip()]
+    if len(parts) < 2:
+        return text
+    if any("→" in part for part in parts):
+        return "\n".join(parts)
+    return "\n".join(f"{number}) {part}" for number, part in enumerate(parts, 1))
+
+
+def _short_progress_note(message: str) -> str | None:
+    """Map a client status line to a short note shown next to RUNNING."""
+    retry = _RETRY_NOTE_PATTERN.search(message)
+    if retry:
+        failed, total = int(retry.group(1)), int(retry.group(2))
+        return f"thử lại {min(failed + 1, total)}/{total}"
+    if message.startswith("[VERIFY] Re-checking"):
+        return "kiểm tra lại ảnh"
+    return None
 
 
 def _clip_response(text: str, max_chars: int) -> str:
@@ -70,6 +104,7 @@ def _safe_question_error_message(error_text: str) -> str:
 class WorkerSignals(QObject):
     finished = Signal(int, str, float)
     failed = Signal(int, str, float)
+    progress = Signal(int, str)
 
 
 class PreparationSignals(QObject):
@@ -114,7 +149,10 @@ class ResponseWorker(QRunnable):
     def run(self) -> None:
         started_at = time.monotonic()
         try:
-            result = self.client.ask_prepared(self.question)
+            result = self.client.ask_prepared(
+                self.question,
+                on_progress=lambda message: self.signals.progress.emit(self.index, message),
+            )
         except Exception as exc:  # pragma: no cover - defensive path
             self.signals.failed.emit(self.index, str(exc), time.monotonic() - started_at)
             return
@@ -135,6 +173,8 @@ class AnswerBatch:
     questions: list[PreparedQuestion] = field(default_factory=list)
     completion_order: list[int] = field(default_factory=list)
     lines_by_index: dict[int, str] = field(default_factory=dict)
+    started_at: float = field(default_factory=time.monotonic)
+    notes_by_index: dict[int, str] = field(default_factory=dict)
 
     @property
     def display_questions(self) -> list[DetectedQuestion]:
@@ -182,11 +222,24 @@ class AnswerBatch:
         self.completion_order.append(index)
         return True
 
-    def progress_text(self) -> str:
+    def running_text(self, index: int, now: float | None) -> str:
+        """``RUNNING`` plus, when ``now`` is given, elapsed seconds and a retry note."""
+        text = "RUNNING"
+        if now is None:
+            return text
+        elapsed = now - self.started_at
+        if elapsed >= _SHOW_ELAPSED_AFTER_S:
+            text += f" {int(elapsed)}s"
+        note = self.notes_by_index.get(index)
+        if note:
+            text += f" ({note})"
+        return text
+
+    def progress_text(self, now: float | None = None) -> str:
         completed_lines = [self.lines_by_index[index] for index in self.completion_order]
         completed_indices = set(self.lines_by_index)
         running_lines = [
-            self.result_line(index, "RUNNING")
+            self.result_line(index, self.running_text(index, now))
             for index in range(self.question_count)
             if index not in completed_indices
         ]
@@ -236,6 +289,9 @@ class ClipboardOverlayController(QObject):
 
         self._monitoring_enabled = False
         self._busy = False
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(_PROGRESS_TICK_MS)
+        self._progress_timer.timeout.connect(self._refresh_progress)
         self._last_seen_fingerprint: str | None = None
         self._last_submitted_fingerprint: str | None = None
         self._last_submitted_at = 0.0
@@ -436,6 +492,7 @@ class ClipboardOverlayController(QObject):
         self._last_submitted_fingerprint = fingerprint
         self._last_submitted_at = time.monotonic()
         self._active_batch = AnswerBatch()
+        self._progress_timer.start()
         self._tray.set_busy(True)
         self._overlay.show_running("ĐANG NHẬN DIỆN CÂU HỎI...")
         self._app.processEvents()
@@ -495,7 +552,24 @@ class ClipboardOverlayController(QObject):
             self._active_workers[index] = worker
             worker.signals.finished.connect(self._handle_question_result)
             worker.signals.failed.connect(self._handle_question_error)
+            worker.signals.progress.connect(self._handle_question_progress)
             self._thread_pool.start(worker)
+
+    def _handle_question_progress(self, index: int, message: str) -> None:
+        batch = self._active_batch
+        if batch is None or index < 0 or index >= batch.question_count or index in batch.lines_by_index:
+            return
+        note = _short_progress_note(message)
+        if note and batch.notes_by_index.get(index) != note:
+            batch.notes_by_index[index] = note
+            self._refresh_progress()
+
+    def _refresh_progress(self) -> None:
+        """Redraw RUNNING lines with the live clock; no-op until questions exist."""
+        batch = self._active_batch
+        if batch is None or batch.question_count == 0 or batch.is_complete:
+            return
+        self._overlay.show_batch_progress(batch.progress_text(time.monotonic()))
 
     def _handle_preparation_error(self, error_text: str) -> None:
         self._preparation_worker = None
@@ -508,6 +582,8 @@ class ClipboardOverlayController(QObject):
 
         self._active_workers.pop(index, None)
         result = _clip_response(text, self._config.max_response_chars)
+        if not batch.is_multi_question and not batch.display_questions[index].label:
+            result = _answer_per_line(result)
         line = batch.result_line(index, result)
         status_label = batch.display_questions[index].label or f"Câu {index + 1}"
         self._status_reporter(f"[RESULT] {status_label} completed ({elapsed_s:.1f}s)")
@@ -543,6 +619,7 @@ class ClipboardOverlayController(QObject):
         self._finish_batch()
 
     def _finish_batch(self) -> None:
+        self._progress_timer.stop()
         self._preparation_worker = None
         self._active_batch = None
         self._active_workers.clear()

@@ -226,23 +226,26 @@ class OverlayWindow(QWidget):
     def _palette_for_state(self, state: str) -> dict[str, str]:
         # No bubble: fully transparent background, faint mid-grey text that
         # stays readable on both light and dark backgrounds.
+        # Text opacity comes from OVERLAY_TEXT_ALPHA (20-255, default 100);
+        # "running" is a little fainter than an answer.
+        alpha = self._config.overlay_text_alpha
         if state == "running":
             return {
                 "background": "rgba(0, 0, 0, 0)",
                 "border": "rgba(0, 0, 0, 0)",
-                "text": "rgba(128, 128, 128, 120)",
+                "text": f"rgba(128, 128, 128, {max(10, int(alpha * 0.8))})",
             }
         if state == "message":
             return {
                 "background": "rgba(0, 0, 0, 0)",
                 "border": "rgba(0, 0, 0, 0)",
-                "text": "rgba(128, 128, 128, 150)",
+                "text": f"rgba(128, 128, 128, {alpha})",
             }
         if state == "error":
             return {
                 "background": "rgba(0, 0, 0, 0)",
                 "border": "rgba(0, 0, 0, 0)",
-                "text": "rgba(170, 100, 100, 150)",
+                "text": f"rgba(170, 100, 100, {alpha})",
             }
         return {
             "background": "rgba(255, 255, 255, 10)",

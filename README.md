@@ -52,6 +52,7 @@ Các tuỳ chọn đáng chú ý:
 | `REQUEST_TIMEOUT_S` | `40` | Thời gian chờ một yêu cầu mạng, tính bằng giây. |
 | `PER_QUESTION_TIME_BUDGET_S` | `60` | Ngân sách tối đa 1 phút cho một câu, gồm retry và kiểm tra ảnh nếu còn thời gian. |
 | `MAX_PARALLEL_QUESTIONS` | `8` | Số câu tối đa gửi đồng thời khi nhận diện chắc chắn nhiều câu; đây là giới hạn cục bộ, không phải quota nhà cung cấp. |
+| `MAX_REQUESTS_PER_MINUTE` | `120` | Giới hạn chung số request API mỗi phút cho mọi luồng cộng lại (`0` = không giới hạn). Khi nhận 429, tất cả luồng cùng chờ theo `Retry-After`. |
 
 Để dùng endpoint tương thích riêng, bỏ comment và cấu hình `OPENAI_BASE_URL` trong `.env`. `OPENAI_REASONING_EFFORT` là tuỳ chọn; chỉ đặt nó nếu dịch vụ của bạn hỗ trợ.
 
@@ -72,7 +73,7 @@ Khi khởi động, ứng dụng chỉ hỏi một lần: **“Môn học tên g
 | `Left Shift` | Ẩn/hiện overlay trên X11. |
 | `Refresh resources` trong tray | Đọc lại tài liệu trong `resources/`. |
 
-Khi một yêu cầu đang chạy, ứng dụng chỉ giữ yêu cầu mới nhất để gửi sau đó. Sau khi bấm `R` hoặc `A`, overlay báo **ĐANG NHẬN DIỆN CÂU HỎI...**; khi nhận ra, ví dụ `Câu 31–34`, nó hiện từng dòng `Câu 31: RUNNING`… Trong lúc chạy, đáp án nào xong trước sẽ được đưa lên đầu, còn các câu chưa xong vẫn hiển thị `RUNNING`. Các câu được xử lý độc lập với số luồng tối đa do `MAX_PARALLEL_QUESTIONS` đặt ra. OCR giờ giữ ảnh tới 2400px và 12.000 ký tự để nhận diện nhiều câu nhỏ hơn; văn bản hỗ trợ `Câu31`, `Câu hỏi 31`, `Question No. 31`, `Q31` và số thứ tự rõ ràng. Văn bản hoặc ảnh mơ hồ vẫn được gửi nguyên khối để tránh tách nhầm đáp án/lựa chọn thành câu hỏi.
+Khi một yêu cầu đang chạy, ứng dụng chỉ giữ yêu cầu mới nhất để gửi sau đó. Sau khi bấm `R` hoặc `A`, overlay báo **ĐANG NHẬN DIỆN CÂU HỎI...**; khi nhận ra, ví dụ `Câu 31–34`, nó hiện từng dòng `Câu 31: RUNNING`… Trong lúc chạy, đáp án nào xong trước sẽ được đưa lên đầu, còn các câu chưa xong vẫn hiển thị `RUNNING`. Câu nào chạy quá 5 giây sẽ hiện thêm số giây và ghi chú, ví dụ `Câu 31: RUNNING 12s (thử lại 2/4)` hoặc `(kiểm tra lại ảnh)`. Đề ghép thẻ đánh số được rút gọn thành `1-B, 2-A, 3-C`; ô điền chỉ trả phần còn thiếu. Các câu được xử lý độc lập với số luồng tối đa do `MAX_PARALLEL_QUESTIONS` đặt ra. OCR giờ giữ ảnh tới 2400px và 12.000 ký tự để nhận diện nhiều câu nhỏ hơn; văn bản hỗ trợ `Câu31`, `Câu hỏi 31`, `Question No. 31`, `Q31` và số thứ tự rõ ràng. Văn bản hoặc ảnh mơ hồ vẫn được gửi nguyên khối để tránh tách nhầm đáp án/lựa chọn thành câu hỏi.
 
 ## Tài liệu local
 
