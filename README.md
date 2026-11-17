@@ -1,119 +1,189 @@
 # Clipboard AI Overlay
 
-Ứng dụng desktop thử nghiệm hiển thị phản hồi AI trong một overlay nhỏ khi bạn chủ động gửi nội dung từ clipboard. Ứng dụng chạy trên máy của bạn; token, endpoint và lựa chọn model là cấu hình riêng trong `.env`, không được đưa vào repository.
+Copy một câu hỏi hoặc chụp màn hình câu hỏi, đáp án sẽ hiện trong một khung nhỏ nổi trên màn hình. Không cần bấm phím gửi.
 
-## Chức năng
+Ứng dụng chạy trên máy của bạn và gọi tới dịch vụ AI **do bạn tự cấu hình** (token, model, endpoint nằm trong `.env` cục bộ, không có trong repository).
 
-- Bật hoặc tắt theo dõi clipboard bằng biểu tượng system tray.
-- Copy văn bản hoặc chụp màn hình (ảnh vào clipboard) là tự gửi, không cần bấm phím.
-- Chống trùng: copy lại đúng câu vừa chụp ảnh (trong 45 giây) sẽ không bị gửi lần hai; overlay hiện lại đáp án cũ kèm gợi ý.
-- Phím `H`: đang chạy thì hủy ngay; phải bấm `H` trước rồi mới chụp/copy câu mới (lúc đang chạy, nội dung mới bị bỏ qua); vừa bị bỏ qua vì trùng (trong 60 giây) thì gửi lại câu đó.
-- Hiển thị phản hồi ngắn trong overlay có thể kéo thả.
-- Nhận diện các câu được đánh số rõ ràng (`Câu 1`, `Question 2`, …), gửi từng câu độc lập và hiện đáp án theo thứ tự hoàn thành.
-- OCR ảnh cục bộ để hỗ trợ tìm tài liệu và tách nhiều câu; khi không tách chắc chắn, ảnh gốc vẫn được gửi để AI đọc theo bố cục.
-- Tìm trong `resources/` trước; web fallback chỉ được dùng khi bạn chủ động bật.
-- Bỏ qua một số chuỗi nhạy cảm rõ ràng trong văn bản trước khi gửi.
+- [Bắt đầu nhanh](#bắt-đầu-nhanh)
+- [Cách dùng hằng ngày](#cách-dùng-hằng-ngày)
+- [Phím tắt và menu tray](#phím-tắt-và-menu-tray)
+- [Các tình huống thường gặp](#các-tình-huống-thường-gặp)
+- [Đọc khung đáp án](#đọc-khung-đáp-án)
+- [Tài liệu local](#tài-liệu-local)
+- [Cấu hình](#cấu-hình)
+- [Quyền riêng tư](#quyền-riêng-tư)
+- [Khắc phục sự cố](#khắc-phục-sự-cố)
 
-## Yêu cầu
+## Bắt đầu nhanh
 
-- Python 3.12 (chưa hỗ trợ 3.13 trở lên vì `rapidocr_onnxruntime` chỉ có bản cho Python < 3.13). Nếu máy chỉ có Python mới hơn, dùng [uv](https://docs.astral.sh/uv/) để tạo venv 3.12 như bên dưới.
-- Môi trường desktop có system tray.
-- Một tài khoản/dịch vụ AI tương thích với endpoint Responses hoặc Chat Completions.
-- Token truy cập và tên model do **bạn tự cấu hình cục bộ**. Repository không kèm các giá trị này hay file trọng số model.
+**Yêu cầu**
 
-Trên Linux, phím tắt toàn cục `Left Shift` (ẩn/hiện overlay) và `H` (hủy / gửi lại câu bị bỏ qua):
+- Linux (X11 hoặc Wayland) có system tray. Windows/macOS chưa được kiểm thử.
+- Python **3.12**. Python 3.13 trở lên chưa chạy được vì `rapidocr_onnxruntime` chưa hỗ trợ. Nếu máy chỉ có Python mới hơn, dùng [uv](https://docs.astral.sh/uv/) như bên dưới.
+- Một dịch vụ AI tương thích endpoint Responses hoặc Chat Completions, cùng token và tên model của riêng bạn.
 
-- X11: dùng `pynput`, cần biến `DISPLAY`.
-- Wayland: đọc bàn phím trực tiếp từ `/dev/input` qua `evdev`. User phải có quyền đọc thiết bị này: `sudo usermod -aG input $USER`, rồi đăng xuất và đăng nhập lại. Lưu ý: mọi chương trình chạy dưới user đó đều đọc được phím bấm.
-- Trên Wayland, ứng dụng tự chạy Qt qua XWayland (`QT_QPA_PLATFORM=xcb`), để overlay là lớp nổi chứ không thành một cửa sổ app riêng trên dock/Alt-Tab. Đặt `QT_QPA_PLATFORM` thủ công nếu muốn ghi đè.
-
-Nếu phím tắt không hoạt động, việc gửi vẫn chạy bình thường vì nó dựa vào clipboard, không dựa vào phím.
-
-## Cài đặt
+**1. Cài đặt**
 
 ```bash
 git clone https://github.com/ThienDZN/Tool-mionitor-for-dcd-.git
 cd Tool-mionitor-for-dcd-
 python3.12 -m venv .venv          # hoặc: uv venv --seed --python 3.12 .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e .
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e .
 cp .env.example .env
 ```
 
-Mở `.env` trên máy của bạn và điền hai biến bắt buộc `OPENAI_API_KEY` và `OPENAI_MODEL` bằng thông tin của tài khoản riêng. Không dán các giá trị đó vào issue, ảnh chụp màn hình, commit hoặc pull request.
+**2. Điền cấu hình**
 
-Các tuỳ chọn đáng chú ý:
+Mở `.env` và điền hai dòng bắt buộc:
 
-| Biến | Mặc định trong template | Tác dụng |
-| --- | --- | --- |
-| `AUTO_START_MONITORING` | `0` | Chỉ bật theo dõi sau khi bạn chọn trong tray. |
-| `ENABLE_WEB_FALLBACK` | `0` | Cho phép ứng dụng yêu cầu tìm kiếm web khi không tìm thấy tài liệu local. |
-| `MAX_CLIPBOARD_CHARS` | `12000` | Cắt ngắn văn bản clipboard trước khi gửi; đủ cho nhiều câu hơn. |
-| `MAX_RESPONSE_CHARS` | `480` | Giới hạn độ dài phản hồi hiển thị. |
-| `REQUEST_TIMEOUT_S` | `40` | Thời gian chờ một yêu cầu mạng, tính bằng giây. |
-| `PER_QUESTION_TIME_BUDGET_S` | `60` | Ngân sách tối đa 1 phút cho một câu, gồm retry và kiểm tra ảnh nếu còn thời gian. |
-| `MAX_PARALLEL_QUESTIONS` | `8` | Số câu tối đa gửi đồng thời khi nhận diện chắc chắn nhiều câu; đây là giới hạn cục bộ, không phải quota nhà cung cấp. |
-| `MAX_REQUESTS_PER_MINUTE` | `120` | Giới hạn chung số request API mỗi phút cho mọi luồng cộng lại (`0` = không giới hạn). Khi nhận 429, tất cả luồng cùng chờ theo `Retry-After`. |
+```ini
+OPENAI_API_KEY=<token của bạn>
+OPENAI_MODEL=<tên model>
+```
 
-Để dùng endpoint tương thích riêng, bỏ comment và cấu hình `OPENAI_BASE_URL` trong `.env`. `OPENAI_REASONING_EFFORT` là tuỳ chọn; chỉ đặt nó nếu dịch vụ của bạn hỗ trợ.
+Nếu dùng endpoint riêng, bỏ comment và điền thêm `OPENAI_BASE_URL`. Không dán các giá trị này vào issue, ảnh chụp màn hình hay commit.
 
-## Chạy ứng dụng
+**3. (Chỉ Wayland) Cho phép đọc phím tắt**
+
+Trên Wayland, phím tắt cần quyền đọc `/dev/input`:
+
+```bash
+sudo usermod -aG input $USER
+```
+
+Sau đó đăng xuất rồi đăng nhập lại. Lệnh này cho mọi chương trình chạy dưới user của bạn đọc được phím bấm; nếu không muốn, bỏ qua bước này. Ứng dụng vẫn trả lời bình thường, chỉ mất phím tắt.
+
+**4. Chạy**
 
 ```bash
 ./run.sh
 ```
 
-Khi khởi động, ứng dụng chỉ hỏi một lần: **“Môn học tên gì?”** để ưu tiên tài liệu local. Sau đó biểu tượng tray xuất hiện.
+Ứng dụng hỏi **“Môn học tên gì?”** (để ưu tiên tài liệu đúng môn), rồi hiện biểu tượng trên tray. **Nhấp trái vào biểu tượng tray để bật monitoring.** Từ lúc này, cứ copy hoặc chụp màn hình là có đáp án.
 
-| Thao tác | Kết quả |
+## Cách dùng hằng ngày
+
+1. **Bật monitoring** bằng cách nhấp trái biểu tượng tray (nhấp lần nữa để tắt).
+2. **Lấy câu hỏi** bằng một trong hai cách:
+   - Bôi đen câu hỏi rồi `Ctrl+C`.
+   - Chụp màn hình vùng có câu hỏi **vào clipboard** (ví dụ công cụ chụp màn hình của hệ thống với tuỳ chọn copy, hoặc Flameshot).
+3. **Xem đáp án**: khung overlay hiện `ĐANG NHẬN DIỆN CÂU HỎI...`, sau đó là `RUNNING`, rồi tới đáp án.
+4. **Câu tiếp theo**: chờ câu hiện tại xong rồi copy hoặc chụp câu mới. Muốn bỏ câu đang chạy thì bấm **`H` trước**, sau đó mới copy hoặc chụp.
+
+> **Quy tắc quan trọng:** khi một câu đang chạy, mọi thứ bạn copy hoặc chụp thêm đều **bị bỏ qua**, không xếp hàng chờ. Nhờ vậy một ảnh chụp nhầm không bao giờ đè lên đáp án. Khung overlay sẽ nhắc: *“Đang chạy câu trước — bấm H để hủy rồi chụp/copy lại”*.
+
+## Phím tắt và menu tray
+
+| Phím / thao tác | Tác dụng |
 | --- | --- |
-| Nhấp trái biểu tượng tray | Bật/tắt theo dõi clipboard. |
-| Sao chép văn bản khi monitoring bật | Tự gửi văn bản mới đến dịch vụ AI đã cấu hình. |
-| Chụp màn hình vào clipboard khi monitoring bật | Tự OCR, nhận diện câu hỏi và gửi ảnh. |
-| `Resend clipboard text` / `Resend clipboard image` trong tray | Gửi lại nội dung clipboard, bỏ qua bộ chống trùng. |
-| `Left Shift` | Ẩn/hiện overlay. |
-| `H` | Đang chạy: hủy câu hiện tại để chụp/copy câu mới. Rảnh, ngay sau khi bị bỏ qua vì trùng: gửi lại câu đó. Lúc khác: không làm gì. |
-| `Refresh resources` trong tray | Đọc lại tài liệu trong `resources/`. |
+| Nhấp trái biểu tượng tray | Bật/tắt monitoring. |
+| `Ctrl+C` văn bản (monitoring bật) | Tự gửi văn bản. |
+| Chụp màn hình vào clipboard (monitoring bật) | Tự đọc chữ trong ảnh (OCR), nhận diện câu hỏi và gửi. |
+| `Left Shift` | Ẩn/hiện khung đáp án. |
+| `H` khi **đang chạy** | Hủy câu đang chạy. Sau đó copy/chụp câu mới. |
+| `H` ngay sau khi app **bỏ qua vì trùng** (trong 60 giây) | Vẫn gửi câu vừa bị bỏ qua. |
+| `H` lúc khác | Không làm gì, nên gõ chữ "h" bình thường không ảnh hưởng. |
+| Menu tray → `Resend clipboard text` / `Resend clipboard image` | Gửi lại nội dung đang có trong clipboard, bỏ qua bộ chống trùng. |
+| Menu tray → `Refresh resources` | Đọc lại tài liệu trong `resources/`. |
 
-Khi một câu đang chạy, ảnh chụp hoặc text copy mới **bị bỏ qua, không xếp hàng chờ**; overlay nhắc bấm `H`. Muốn chạy câu mới: bấm `H` để hủy trước, rồi mới chụp/copy. Khi clipboard có cả text lẫn ảnh (copy từ Word/trình duyệt), text được ưu tiên. Sau khi copy hoặc chụp ảnh, overlay báo **ĐANG NHẬN DIỆN CÂU HỎI...**; khi nhận ra, ví dụ `Câu 31–34`, nó hiện từng dòng `Câu 31: RUNNING`… Trong lúc chạy, đáp án nào xong trước sẽ được đưa lên đầu, còn các câu chưa xong vẫn hiển thị `RUNNING`. Câu nào chạy quá 5 giây sẽ hiện thêm số giây và ghi chú, ví dụ `Câu 31: RUNNING 12s (thử lại 2/4)` hoặc `(kiểm tra lại ảnh)`. Đề ghép thẻ đánh số được rút gọn thành `1-B, 2-A, 3-C`; ô điền chỉ trả phần còn thiếu. Các câu được xử lý độc lập với số luồng tối đa do `MAX_PARALLEL_QUESTIONS` đặt ra. OCR giờ giữ ảnh tới 2400px và 12.000 ký tự để nhận diện nhiều câu nhỏ hơn; văn bản hỗ trợ `Câu31`, `Câu hỏi 31`, `Question No. 31`, `Q31` và số thứ tự rõ ràng. Văn bản hoặc ảnh mơ hồ vẫn được gửi nguyên khối để tránh tách nhầm đáp án/lựa chọn thành câu hỏi.
+Nếu phím tắt không hoạt động, việc gửi vẫn chạy bình thường vì nó dựa vào clipboard, không dựa vào phím.
+
+## Các tình huống thường gặp
+
+**Chụp nhầm ảnh hoặc copy nhầm câu.**
+Bấm `H` để hủy, rồi chụp hoặc copy lại câu đúng. Nếu bạn đã chụp câu đúng trước khi bấm `H`, câu đó đã bị bỏ qua; hãy chụp hoặc copy lại sau khi bấm `H`.
+
+**Chụp ảnh câu hỏi xong lại copy text của chính câu đó.**
+App nhận ra đây là câu vừa trả lời (trong 45 giây) và không gửi lần hai. Khung overlay hiện lại đáp án cũ kèm dòng *“Trùng câu vừa trả lời — bấm H để gửi lại”*.
+
+**App bỏ qua một câu mới vì tưởng là câu cũ.**
+Có thể xảy ra khi hai câu gần giống hệt nhau. Bấm `H` trong vòng 60 giây để gửi câu đó.
+
+**Muốn hỏi lại đúng câu vừa hỏi.**
+Bấm `H` ngay sau khi app báo trùng, hoặc dùng `Resend clipboard ...` trong menu tray.
+
+**Copy từ Word, WPS hoặc trình duyệt.**
+Các app này thường đưa cả chữ lẫn ảnh vào clipboard. App ưu tiên gửi **chữ**.
+
+**Một ảnh chứa nhiều câu (`Câu 31`, `Câu 32`, …).**
+App tách từng câu và chạy song song. Câu nào xong trước hiện lên trước.
+
+## Đọc khung đáp án
+
+| Bạn thấy | Nghĩa là |
+| --- | --- |
+| `ĐANG NHẬN DIỆN CÂU HỎI...` | Đang đọc nội dung, tách câu hỏi. |
+| `Câu 31: RUNNING` | Câu đang chờ AI trả lời. |
+| `Câu 31: RUNNING 12s (thử lại 2/4)` | Câu chạy lâu hơn 5 giây; đang thử lại lần 2. |
+| `(kiểm tra lại ảnh)` | Đang hỏi AI lần hai để đối chiếu với ảnh gốc (bật bằng `IMAGE_VERIFICATION=1`). |
+| `Đáp án đúng: B. ...` | Câu trắc nghiệm một đáp án. |
+| `1-B, 2-A, 3-C` | Câu ghép thẻ hoặc nối cột. |
+| `Đã hủy. Copy hoặc chụp câu mới.` | Bạn vừa bấm `H`. |
+| `AI error: ...` | Lỗi mạng, hết thời gian hoặc bị giới hạn lượt gọi; xem [Khắc phục sự cố](#khắc-phục-sự-cố). |
+
+Khung overlay kéo thả được. Đáp án tự ẩn sau `OVERLAY_DURATION_MS` (mặc định 14 giây); bấm `Left Shift` để hiện lại.
 
 ## Tài liệu local
 
-Đặt tài liệu theo chủ đề vào thư mục `resources/`. Các định dạng được hỗ trợ là `.txt`, `.md`, `.pdf` và `.docx`.
+Đặt giáo trình, slide, ghi chú vào thư mục `resources/` (hỗ trợ `.txt`, `.md`, `.pdf`, `.docx`), rồi chọn `Refresh resources` trong tray hoặc khởi động lại app. Khi trả lời, app tìm đoạn liên quan trong tài liệu này trước.
 
-1. Thêm tài liệu vào `resources/`.
-2. Chạy ứng dụng hoặc chọn `Refresh resources` trong tray.
-3. Khi gửi nội dung, ứng dụng sẽ tìm các đoạn liên quan trong tài liệu local trước.
+`resources/` bị Git ignore vì tài liệu có thể là dữ liệu riêng tư hoặc có bản quyền.
 
-`resources/` bị Git ignore (trừ file hướng dẫn), vì tài liệu của bạn có thể là dữ liệu riêng tư hoặc có bản quyền.
+## Cấu hình
 
-## Quyền riêng tư và an toàn dữ liệu
+Mọi tuỳ chọn nằm trong `.env` (xem `.env.example` để biết đầy đủ):
 
-- Khi monitoring bật, **mọi** text và ảnh chụp màn hình mới trong clipboard đều được gửi tự động. Tắt monitoring (nhấp tray) trước khi copy/chụp nội dung riêng tư.
-- Khi monitoring tắt, chỉ gửi khi bạn chọn `Resend clipboard ...` trong tray.
-- Nội dung gửi đi, đoạn trích từ `resources/`, và web fallback (nếu bật) có thể rời khỏi máy để đến dịch vụ AI của bạn. Không gửi mật khẩu, token, thông tin cá nhân, nội dung công việc nhạy cảm hoặc ảnh có thông tin bí mật.
-- Bộ lọc hiện chỉ nhận ra một số mẫu secret trong **văn bản**; nó không phải cơ chế bảo vệ tuyệt đối, đặc biệt với ảnh hoặc văn bản OCR.
-- `.env`, trạng thái chạy, tài liệu `resources/`, virtual environment và cache đều bị ignore. Trước mỗi commit, kiểm tra lại bằng `git status`.
+| Biến | Mặc định | Tác dụng |
+| --- | --- | --- |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | (bắt buộc) | Token và model của bạn. |
+| `OPENAI_BASE_URL` | trống | Endpoint tương thích riêng. |
+| `OPENAI_REASONING_EFFORT` | trống | Chỉ đặt nếu dịch vụ của bạn hỗ trợ. |
+| `AUTO_START_MONITORING` | `0` | `1` = bật monitoring ngay khi mở app. |
+| `IMAGE_VERIFICATION` | `1` | Hỏi AI lần hai bằng ảnh gốc: chính xác hơn nhưng chậm hơn. `0` để tắt. |
+| `OVERLAY_DURATION_MS` | `14000` | Thời gian hiện đáp án. |
+| `OVERLAY_FONT_POINT_SIZE` | `8` | Cỡ chữ overlay. |
+| `OVERLAY_TEXT_ALPHA` | `100` | Độ rõ của chữ: 20 (rất mờ) đến 255 (rõ hết). |
+| `PER_QUESTION_TIME_BUDGET_S` | `60` | Thời gian tối đa cho một câu, gồm cả thử lại. |
+| `REQUEST_TIMEOUT_S` | `40` | Thời gian chờ một request mạng. |
+| `MAX_PARALLEL_QUESTIONS` | `8` | Số câu chạy song song. Giảm nếu hay gặp lỗi 429. |
+| `MAX_REQUESTS_PER_MINUTE` | `120` | Giới hạn request mỗi phút (`0` = không giới hạn). |
+| `MAX_CLIPBOARD_CHARS` | `12000` | Cắt bớt văn bản quá dài trước khi gửi. |
+| `MAX_RESPONSE_CHARS` | `480` | Độ dài tối đa đáp án hiển thị. |
+| `ENABLE_WEB_FALLBACK` | `0` | `1` = cho phép tìm web khi tài liệu local không có. |
 
-Nếu token từng bị commit hoặc công khai, hãy thu hồi/rotate token đó ngay tại nhà cung cấp rồi xoá nó khỏi lịch sử Git trước khi public repository.
+Trên Wayland, app tự chạy giao diện qua XWayland (`QT_QPA_PLATFORM=xcb`) để khung đáp án nổi trên màn hình thay vì thành một cửa sổ riêng. Đặt `QT_QPA_PLATFORM` thủ công nếu muốn ghi đè.
+
+## Quyền riêng tư
+
+- Khi monitoring bật, **mọi** text bạn copy và **mọi** ảnh chụp màn hình vào clipboard đều được gửi tới dịch vụ AI. **Tắt monitoring trước khi copy hoặc chụp nội dung riêng tư** (mật khẩu, tin nhắn, thông tin cá nhân).
+- Đoạn trích từ `resources/` và kết quả web (nếu bật) cũng được gửi kèm.
+- App lọc được một số mẫu secret rõ ràng trong **văn bản**, nhưng không lọc ảnh và không bảo vệ tuyệt đối.
+- `.env`, `resources/`, trạng thái chạy và venv đều bị Git ignore. Nếu token từng bị lộ hoặc bị commit, hãy thu hồi token đó ngay tại nhà cung cấp.
 
 ## Khắc phục sự cố
 
 | Hiện tượng | Cách xử lý |
 | --- | --- |
-| Báo thiếu cấu hình | Kiểm tra `.env` có hai biến bắt buộc và không để trống; sau đó khởi động lại ứng dụng. |
-| Không thấy tray icon | Dùng desktop session có hỗ trợ system tray. |
-| `Left Shift` hoặc `H` không hoạt động | Xem dòng `[STARTUP] Global hotkeys unavailable: ...` trong terminal. Trên Wayland, thường do user chưa thuộc nhóm `input`. |
-| Báo `429` / rate limit | `MAX_PARALLEL_QUESTIONS=8` chỉ tăng số yêu cầu cục bộ; quota thật do nhà cung cấp quyết định. Ứng dụng tôn trọng `Retry-After` và retry backoff, nhưng nếu vẫn lặp lại hãy giảm giá trị này. |
-| Ứng dụng không phản hồi | Kiểm tra mạng, endpoint cục bộ, quyền token; điều chỉnh `REQUEST_TIMEOUT_S` và `PER_QUESTION_TIME_BUDGET_S` nếu cần. |
-| Không tìm thấy tài liệu mới | Bảo đảm file nằm trong `resources/`, dùng định dạng hỗ trợ, rồi chọn `Refresh resources`. |
+| Copy/chụp mà không có gì xảy ra | Kiểm tra monitoring đã bật chưa (nhấp tray). Nếu một câu đang chạy, nội dung mới bị bỏ qua: bấm `H` rồi thử lại. |
+| Báo trùng nhưng là câu mới | Bấm `H` trong vòng 60 giây để vẫn gửi. |
+| Chụp màn hình không được gửi | Công cụ chụp phải **copy ảnh vào clipboard**, không chỉ lưu thành file. |
+| Báo thiếu cấu hình | Kiểm tra `.env` có `OPENAI_API_KEY` và `OPENAI_MODEL`, rồi mở lại app. |
+| Không thấy biểu tượng tray | Dùng desktop có system tray (GNOME cần extension AppIndicator). |
+| `Left Shift` hoặc `H` không ăn | Xem dòng `[STARTUP] Global hotkeys unavailable: ...` trong terminal. Trên Wayland thường do chưa vào nhóm `input`, xem bước 3 phần Bắt đầu nhanh. |
+| `AI error: ... giới hạn lượt gọi` (429) | Giảm `MAX_PARALLEL_QUESTIONS` hoặc `MAX_REQUESTS_PER_MINUTE`. |
+| `AI error: ... hết thời gian chờ` | Kiểm tra mạng; tăng `PER_QUESTION_TIME_BUDGET_S` hoặc đặt `IMAGE_VERIFICATION=0` cho nhanh hơn. |
+| `Missing virtual environment` khi chạy `./run.sh` | Làm lại bước 1 phần Bắt đầu nhanh. |
 
-## Cấu trúc chính
+Log chi tiết (`[SKIP]`, `[CANCEL]`, `[RESULT]`, …) hiện trong terminal đã chạy `./run.sh`.
+
+## Cấu trúc thư mục
 
 ```text
-src/clip_overlay_ai/  Mã nguồn ứng dụng
-docs/                 Tài liệu kiến trúc và tài nguyên
-resources/            Tài liệu local của người dùng (không commit)
-.env.example          Mẫu cấu hình không chứa secret hay model cụ thể
+src/clip_overlay_ai/  Mã nguồn
+tests/                Test tự động (pytest)
+docs/                 Tài liệu kiến trúc
+resources/            Tài liệu local của bạn (không commit)
+.env.example          Mẫu cấu hình, không chứa secret
+run.sh                Script chạy app
 ```
