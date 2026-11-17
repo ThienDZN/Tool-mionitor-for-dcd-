@@ -5,7 +5,9 @@
 ## Chức năng
 
 - Bật hoặc tắt theo dõi clipboard bằng biểu tượng system tray.
-- Gửi văn bản đang chọn bằng phím `R`, hoặc gửi ảnh trong clipboard bằng phím `A`.
+- Copy văn bản hoặc chụp màn hình (ảnh vào clipboard) là tự gửi, không cần bấm phím.
+- Chống trùng: copy lại đúng câu vừa chụp ảnh (trong 45 giây) sẽ không bị gửi lần hai; overlay hiện lại đáp án cũ kèm gợi ý.
+- Phím `H`: đang chạy thì hủy ngay; phải bấm `H` trước rồi mới chụp/copy câu mới (lúc đang chạy, nội dung mới bị bỏ qua); vừa bị bỏ qua vì trùng (trong 60 giây) thì gửi lại câu đó.
 - Hiển thị phản hồi ngắn trong overlay có thể kéo thả.
 - Nhận diện các câu được đánh số rõ ràng (`Câu 1`, `Question 2`, …), gửi từng câu độc lập và hiện đáp án theo thứ tự hoàn thành.
 - OCR ảnh cục bộ để hỗ trợ tìm tài liệu và tách nhiều câu; khi không tách chắc chắn, ảnh gốc vẫn được gửi để AI đọc theo bố cục.
@@ -19,13 +21,13 @@
 - Một tài khoản/dịch vụ AI tương thích với endpoint Responses hoặc Chat Completions.
 - Token truy cập và tên model do **bạn tự cấu hình cục bộ**. Repository không kèm các giá trị này hay file trọng số model.
 
-Trên Linux, các phím tắt toàn cục (`Left Shift`, `R`, `A`):
+Trên Linux, phím tắt toàn cục `Left Shift` (ẩn/hiện overlay) và `H` (hủy / gửi lại câu bị bỏ qua):
 
 - X11: dùng `pynput`, cần biến `DISPLAY`.
 - Wayland: đọc bàn phím trực tiếp từ `/dev/input` qua `evdev`. User phải có quyền đọc thiết bị này: `sudo usermod -aG input $USER`, rồi đăng xuất và đăng nhập lại. Lưu ý: mọi chương trình chạy dưới user đó đều đọc được phím bấm.
 - Trên Wayland, ứng dụng tự chạy Qt qua XWayland (`QT_QPA_PLATFORM=xcb`), để overlay là lớp nổi chứ không thành một cửa sổ app riêng trên dock/Alt-Tab. Đặt `QT_QPA_PLATFORM` thủ công nếu muốn ghi đè.
 
-Nếu phím tắt không hoạt động, bạn vẫn dùng được các mục tương ứng trong tray menu.
+Nếu phím tắt không hoạt động, việc gửi vẫn chạy bình thường vì nó dựa vào clipboard, không dựa vào phím.
 
 ## Cài đặt
 
@@ -67,13 +69,14 @@ Khi khởi động, ứng dụng chỉ hỏi một lần: **“Môn học tên g
 | Thao tác | Kết quả |
 | --- | --- |
 | Nhấp trái biểu tượng tray | Bật/tắt theo dõi clipboard. |
-| Sao chép văn bản khi monitoring bật | Gửi văn bản mới đến dịch vụ AI đã cấu hình. |
-| `R` | Gửi văn bản đang bôi đen trên X11; nếu không có, gửi text clipboard. |
-| `A` | Gửi ảnh đang có trong clipboard. |
-| `Left Shift` | Ẩn/hiện overlay trên X11. |
+| Sao chép văn bản khi monitoring bật | Tự gửi văn bản mới đến dịch vụ AI đã cấu hình. |
+| Chụp màn hình vào clipboard khi monitoring bật | Tự OCR, nhận diện câu hỏi và gửi ảnh. |
+| `Resend clipboard text` / `Resend clipboard image` trong tray | Gửi lại nội dung clipboard, bỏ qua bộ chống trùng. |
+| `Left Shift` | Ẩn/hiện overlay. |
+| `H` | Đang chạy: hủy câu hiện tại để chụp/copy câu mới. Rảnh, ngay sau khi bị bỏ qua vì trùng: gửi lại câu đó. Lúc khác: không làm gì. |
 | `Refresh resources` trong tray | Đọc lại tài liệu trong `resources/`. |
 
-Khi một yêu cầu đang chạy, ứng dụng chỉ giữ yêu cầu mới nhất để gửi sau đó. Sau khi bấm `R` hoặc `A`, overlay báo **ĐANG NHẬN DIỆN CÂU HỎI...**; khi nhận ra, ví dụ `Câu 31–34`, nó hiện từng dòng `Câu 31: RUNNING`… Trong lúc chạy, đáp án nào xong trước sẽ được đưa lên đầu, còn các câu chưa xong vẫn hiển thị `RUNNING`. Câu nào chạy quá 5 giây sẽ hiện thêm số giây và ghi chú, ví dụ `Câu 31: RUNNING 12s (thử lại 2/4)` hoặc `(kiểm tra lại ảnh)`. Đề ghép thẻ đánh số được rút gọn thành `1-B, 2-A, 3-C`; ô điền chỉ trả phần còn thiếu. Các câu được xử lý độc lập với số luồng tối đa do `MAX_PARALLEL_QUESTIONS` đặt ra. OCR giờ giữ ảnh tới 2400px và 12.000 ký tự để nhận diện nhiều câu nhỏ hơn; văn bản hỗ trợ `Câu31`, `Câu hỏi 31`, `Question No. 31`, `Q31` và số thứ tự rõ ràng. Văn bản hoặc ảnh mơ hồ vẫn được gửi nguyên khối để tránh tách nhầm đáp án/lựa chọn thành câu hỏi.
+Khi một câu đang chạy, ảnh chụp hoặc text copy mới **bị bỏ qua, không xếp hàng chờ**; overlay nhắc bấm `H`. Muốn chạy câu mới: bấm `H` để hủy trước, rồi mới chụp/copy. Khi clipboard có cả text lẫn ảnh (copy từ Word/trình duyệt), text được ưu tiên. Sau khi copy hoặc chụp ảnh, overlay báo **ĐANG NHẬN DIỆN CÂU HỎI...**; khi nhận ra, ví dụ `Câu 31–34`, nó hiện từng dòng `Câu 31: RUNNING`… Trong lúc chạy, đáp án nào xong trước sẽ được đưa lên đầu, còn các câu chưa xong vẫn hiển thị `RUNNING`. Câu nào chạy quá 5 giây sẽ hiện thêm số giây và ghi chú, ví dụ `Câu 31: RUNNING 12s (thử lại 2/4)` hoặc `(kiểm tra lại ảnh)`. Đề ghép thẻ đánh số được rút gọn thành `1-B, 2-A, 3-C`; ô điền chỉ trả phần còn thiếu. Các câu được xử lý độc lập với số luồng tối đa do `MAX_PARALLEL_QUESTIONS` đặt ra. OCR giờ giữ ảnh tới 2400px và 12.000 ký tự để nhận diện nhiều câu nhỏ hơn; văn bản hỗ trợ `Câu31`, `Câu hỏi 31`, `Question No. 31`, `Q31` và số thứ tự rõ ràng. Văn bản hoặc ảnh mơ hồ vẫn được gửi nguyên khối để tránh tách nhầm đáp án/lựa chọn thành câu hỏi.
 
 ## Tài liệu local
 
@@ -87,8 +90,8 @@ Khi một yêu cầu đang chạy, ứng dụng chỉ giữ yêu cầu mới nh�
 
 ## Quyền riêng tư và an toàn dữ liệu
 
-- Text clipboard chỉ được gửi khi monitoring đang bật hoặc khi bạn chủ động dùng `R`.
-- Ảnh clipboard chỉ gửi khi bạn dùng `A` hoặc hành động tương ứng trong tray.
+- Khi monitoring bật, **mọi** text và ảnh chụp màn hình mới trong clipboard đều được gửi tự động. Tắt monitoring (nhấp tray) trước khi copy/chụp nội dung riêng tư.
+- Khi monitoring tắt, chỉ gửi khi bạn chọn `Resend clipboard ...` trong tray.
 - Nội dung gửi đi, đoạn trích từ `resources/`, và web fallback (nếu bật) có thể rời khỏi máy để đến dịch vụ AI của bạn. Không gửi mật khẩu, token, thông tin cá nhân, nội dung công việc nhạy cảm hoặc ảnh có thông tin bí mật.
 - Bộ lọc hiện chỉ nhận ra một số mẫu secret trong **văn bản**; nó không phải cơ chế bảo vệ tuyệt đối, đặc biệt với ảnh hoặc văn bản OCR.
 - `.env`, trạng thái chạy, tài liệu `resources/`, virtual environment và cache đều bị ignore. Trước mỗi commit, kiểm tra lại bằng `git status`.
@@ -101,7 +104,7 @@ Nếu token từng bị commit hoặc công khai, hãy thu hồi/rotate token đ
 | --- | --- |
 | Báo thiếu cấu hình | Kiểm tra `.env` có hai biến bắt buộc và không để trống; sau đó khởi động lại ứng dụng. |
 | Không thấy tray icon | Dùng desktop session có hỗ trợ system tray. |
-| `R`, `A` hoặc `Left Shift` không hoạt động | Xem dòng `[STARTUP] Global hotkeys unavailable: ...` trong terminal. Trên Wayland, thường do user chưa thuộc nhóm `input`. |
+| `Left Shift` hoặc `H` không hoạt động | Xem dòng `[STARTUP] Global hotkeys unavailable: ...` trong terminal. Trên Wayland, thường do user chưa thuộc nhóm `input`. |
 | Báo `429` / rate limit | `MAX_PARALLEL_QUESTIONS=8` chỉ tăng số yêu cầu cục bộ; quota thật do nhà cung cấp quyết định. Ứng dụng tôn trọng `Retry-After` và retry backoff, nhưng nếu vẫn lặp lại hãy giảm giá trị này. |
 | Ứng dụng không phản hồi | Kiểm tra mạng, endpoint cục bộ, quyền token; điều chỉnh `REQUEST_TIMEOUT_S` và `PER_QUESTION_TIME_BUDGET_S` nếu cần. |
 | Không tìm thấy tài liệu mới | Bảo đảm file nằm trong `resources/`, dùng định dạng hỗ trợ, rồi chọn `Refresh resources`. |

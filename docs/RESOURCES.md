@@ -17,7 +17,7 @@
 - Clipboard + hotkeys
   `src/clip_overlay_ai/app.py`
   `src/clip_overlay_ai/hotkey.py`
-  Clipboard monitoring, `R` trigger flow, and `Left Shift` hide/show behavior.
+  Clipboard monitoring (auto-send for text and screenshots) and `Left Shift` hide/show behavior.
 
 - AI transport + answer formatting
   `src/clip_overlay_ai/ai_client.py`

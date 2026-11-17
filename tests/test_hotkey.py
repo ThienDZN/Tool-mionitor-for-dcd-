@@ -9,7 +9,7 @@ from clip_overlay_ai.hotkey import GlobalHotkeyListener, _EvdevListener
 
 pytestmark = pytest.mark.skipif(not hotkey.sys.platform.startswith("linux"), reason="Linux only")
 
-EV_KEY, KEY_LEFTSHIFT, KEY_R, KEY_A = 1, 42, 19, 30
+EV_KEY, KEY_LEFTSHIFT, KEY_R, KEY_A, KEY_H = 1, 42, 19, 30, 35
 
 
 class FakeDevice:
@@ -38,8 +38,7 @@ def make_listener(evdev_backend: SimpleNamespace) -> tuple[GlobalHotkeyListener,
     calls: list[str] = []
     listener = GlobalHotkeyListener(
         on_toggle_overlay=lambda: calls.append("toggle"),
-        on_send_text=lambda: calls.append("text"),
-        on_send_image=lambda: calls.append("image"),
+        on_cancel=lambda: calls.append("cancel"),
         session_type="wayland",
         evdev_backend=evdev_backend,
     )
@@ -90,7 +89,7 @@ def test_left_shift_toggles_once_per_press_and_ignores_repeat() -> None:
     assert calls == ["toggle", "toggle"]
 
 
-def test_r_and_a_send_text_and_image_and_other_keys_are_ignored() -> None:
+def test_r_a_and_other_keys_no_longer_trigger_anything() -> None:
     listener, calls = make_listener(
         fake_evdev({"/dev/input/event0": FakeDevice([KEY_LEFTSHIFT, KEY_A])})
     )
@@ -101,7 +100,7 @@ def test_r_and_a_send_text_and_image_and_other_keys_are_ignored() -> None:
     evdev_listener.dispatch(EV_KEY, 57, 1)  # space
     evdev_listener.dispatch(2, 0, 5)  # relative mouse motion
 
-    assert calls == ["text", "image"]
+    assert calls == []
 
 
 def test_x11_still_uses_pynput_backend() -> None:
@@ -117,8 +116,7 @@ def test_x11_still_uses_pynput_backend() -> None:
     calls: list[str] = []
     listener = GlobalHotkeyListener(
         on_toggle_overlay=lambda: calls.append("toggle"),
-        on_send_text=lambda: calls.append("text"),
-        on_send_image=lambda: calls.append("image"),
+        on_cancel=lambda: calls.append("cancel"),
         session_type="x11",
         keyboard_backend=backend,
     )
@@ -128,7 +126,22 @@ def test_x11_still_uses_pynput_backend() -> None:
     pynput_listener = listener._listener
     pynput_listener.on_press(Key.shift_l)
     pynput_listener.on_press(SimpleNamespace(char="R"))
+    pynput_listener.on_press(SimpleNamespace(char="H"))
     pynput_listener.on_release(Key.shift_l)
     pynput_listener.on_press(Key.shift_l)
 
-    assert calls == ["toggle", "text", "toggle"]
+    assert calls == ["toggle", "cancel", "toggle"]
+
+
+def test_h_requests_cancel_once_per_press() -> None:
+    listener, calls = make_listener(
+        fake_evdev({"/dev/input/event0": FakeDevice([KEY_LEFTSHIFT, KEY_A, KEY_H])})
+    )
+    evdev_listener = listener._listener
+
+    evdev_listener.dispatch(EV_KEY, KEY_H, 1)
+    evdev_listener.dispatch(EV_KEY, KEY_H, 2)  # auto-repeat
+    evdev_listener.dispatch(EV_KEY, KEY_H, 0)
+    evdev_listener.dispatch(EV_KEY, KEY_H, 1)
+
+    assert calls == ["cancel", "cancel"]

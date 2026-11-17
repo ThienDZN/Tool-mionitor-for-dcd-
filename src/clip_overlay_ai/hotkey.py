@@ -9,8 +9,7 @@ from types import ModuleType
 
 # Logical key names shared by every backend.
 _LEFT_SHIFT = "shift_l"
-_KEY_R = "r"
-_KEY_A = "a"
+_KEY_H = "h"
 
 
 class _EvdevListener:
@@ -23,9 +22,10 @@ class _EvdevListener:
 
     EV_KEY = 1
     CODE_LEFTSHIFT = 42
-    CODE_R = 19
+    CODE_H = 35
+    # Only used to tell real keyboards from other devices that report key events.
     CODE_A = 30
-    _NAMES = {CODE_LEFTSHIFT: _LEFT_SHIFT, CODE_R: _KEY_R, CODE_A: _KEY_A}
+    _NAMES = {CODE_LEFTSHIFT: _LEFT_SHIFT, CODE_H: _KEY_H}
 
     def __init__(
         self,
@@ -112,15 +112,13 @@ class GlobalHotkeyListener:
     def __init__(
         self,
         on_toggle_overlay: Callable[[], None],
-        on_send_text: Callable[[], None],
-        on_send_image: Callable[[], None],
+        on_cancel: Callable[[], None] | None = None,
         session_type: str | None = None,
         keyboard_backend: ModuleType | None = None,
         evdev_backend: ModuleType | None = None,
     ) -> None:
         self._on_toggle_overlay = on_toggle_overlay
-        self._on_send_text = on_send_text
-        self._on_send_image = on_send_image
+        self._on_cancel = on_cancel
         self._session_type = (session_type or os.getenv("XDG_SESSION_TYPE", "")).strip().lower()
         self._keyboard_backend = keyboard_backend
         self._listener = None
@@ -197,8 +195,8 @@ class GlobalHotkeyListener:
         if key == self._keyboard_backend.Key.shift_l:
             return _LEFT_SHIFT
         char = getattr(key, "char", None)
-        if isinstance(char, str) and char.lower() in {_KEY_R, _KEY_A}:
-            return char.lower()
+        if isinstance(char, str) and char.lower() == _KEY_H:
+            return _KEY_H
         return None
 
     def _handle_pynput_press(self, key: object) -> None:
@@ -217,10 +215,8 @@ class GlobalHotkeyListener:
         self._down.add(name)
         if name == _LEFT_SHIFT:
             self._on_toggle_overlay()
-        elif name == _KEY_R:
-            self._on_send_text()
-        elif name == _KEY_A:
-            self._on_send_image()
+        elif name == _KEY_H and self._on_cancel is not None:
+            self._on_cancel()
 
     def _handle_key_release(self, name: str) -> None:
         self._down.discard(name)

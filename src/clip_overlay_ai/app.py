@@ -11,6 +11,7 @@ from PySide6.QtGui import QClipboard, QGuiApplication
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from .ai_client import ClientConfigurationError, OpenAIResponsesClient, PreparedQuestion
+from .clipboard_gate import RecentQuestions
 from .config import AppConfig
 from .hotkey import GlobalHotkeyListener
 from .overlay import OverlayWindow
@@ -52,6 +53,14 @@ _DEDUP_WINDOW_S = 8.0
 _SHOW_ELAPSED_AFTER_S = 5.0
 _PROGRESS_TICK_MS = 1000
 _RETRY_NOTE_PATTERN = re.compile(r"\[RETRY\]\s*Attempt\s+(\d+)/(\d+)")
+# One copy or screenshot fires dataChanged several times (each MIME type, or a
+# screenshot tool that sets the image and then a file path). Read the clipboard
+# once after it settles instead of reacting to every intermediate state.
+_CLIPBOARD_SETTLE_MS = 300
+# How long after an automatic skip H still means "send that anyway".
+_FORCE_SKIPPED_WINDOW_S = 60.0
+_DETECTING_TEXT = "ĐANG NHẬN DIỆN CÂU HỎI..."
+_BUSY_HINT = "(Đang chạy câu trước — bấm H để hủy rồi chụp/copy lại)"
 
 
 def _answer_per_line(text: str) -> str:
@@ -101,49 +110,59 @@ def _safe_question_error_message(error_text: str) -> str:
     return "AI error: Không thể lấy đáp án. Kiểm tra mạng hoặc cấu hình rồi thử lại."
 
 
+# Every worker signal starts with the batch generation it belongs to. Pressing H
+# bumps the generation; network calls already in flight cannot be interrupted,
+# so their late results are recognised by the old generation and dropped.
 class WorkerSignals(QObject):
-    finished = Signal(int, str, float)
-    failed = Signal(int, str, float)
-    progress = Signal(int, str)
+    finished = Signal(int, int, str, float)
+    failed = Signal(int, int, str, float)
+    progress = Signal(int, int, str)
 
 
 class PreparationSignals(QObject):
-    detected = Signal(object)
-    finished = Signal(object)
-    failed = Signal(str)
+    detected = Signal(int, object)
+    finished = Signal(int, object)
+    failed = Signal(int, str)
 
 
 class HotkeySignals(QObject):
     toggle_requested = Signal()
-    send_text_requested = Signal()
-    send_image_requested = Signal()
+    cancel_requested = Signal()
 
 
 class BatchPreparationWorker(QRunnable):
-    def __init__(self, client: OpenAIResponsesClient, payload: PreparedClipboardPayload) -> None:
+    def __init__(self, client: OpenAIResponsesClient, payload: PreparedClipboardPayload, generation: int) -> None:
         super().__init__()
         self.client = client
         self.payload = payload
+        self.generation = generation
         self.signals = PreparationSignals()
 
     def run(self) -> None:
         try:
             result = self.client.prepare_batch(
                 self.payload,
-                on_questions_detected=self.signals.detected.emit,
+                on_questions_detected=lambda questions: self.signals.detected.emit(self.generation, questions),
             )
         except Exception as exc:  # pragma: no cover - defensive path
-            self.signals.failed.emit(str(exc))
+            self.signals.failed.emit(self.generation, str(exc))
             return
-        self.signals.finished.emit(result)
+        self.signals.finished.emit(self.generation, result)
 
 
 class ResponseWorker(QRunnable):
-    def __init__(self, client: OpenAIResponsesClient, index: int, question: PreparedQuestion) -> None:
+    def __init__(
+        self,
+        client: OpenAIResponsesClient,
+        index: int,
+        question: PreparedQuestion,
+        generation: int,
+    ) -> None:
         super().__init__()
         self.client = client
         self.index = index
         self.question = question
+        self.generation = generation
         self.signals = WorkerSignals()
 
     def run(self) -> None:
@@ -151,18 +170,12 @@ class ResponseWorker(QRunnable):
         try:
             result = self.client.ask_prepared(
                 self.question,
-                on_progress=lambda message: self.signals.progress.emit(self.index, message),
+                on_progress=lambda message: self.signals.progress.emit(self.generation, self.index, message),
             )
         except Exception as exc:  # pragma: no cover - defensive path
-            self.signals.failed.emit(self.index, str(exc), time.monotonic() - started_at)
+            self.signals.failed.emit(self.generation, self.index, str(exc), time.monotonic() - started_at)
             return
-        self.signals.finished.emit(self.index, result, time.monotonic() - started_at)
-
-
-@dataclass(slots=True)
-class PendingRequest:
-    payload: PreparedClipboardPayload
-    fingerprint: str
+        self.signals.finished.emit(self.generation, self.index, result, time.monotonic() - started_at)
 
 
 @dataclass(slots=True)
@@ -175,6 +188,8 @@ class AnswerBatch:
     lines_by_index: dict[int, str] = field(default_factory=dict)
     started_at: float = field(default_factory=time.monotonic)
     notes_by_index: dict[int, str] = field(default_factory=dict)
+    # Shown under the RUNNING lines only, never in the final answer.
+    footer: str = ""
 
     @property
     def display_questions(self) -> list[DetectedQuestion]:
@@ -243,7 +258,8 @@ class AnswerBatch:
             for index in range(self.question_count)
             if index not in completed_indices
         ]
-        return "\n".join([*completed_lines, *running_lines])
+        footer = [self.footer] if self.footer and not self.is_complete else []
+        return "\n".join([*completed_lines, *running_lines, *footer])
 
     def _label_for(self, index: int) -> str | None:
         if 0 <= index < self.question_count:
@@ -283,8 +299,7 @@ class ClipboardOverlayController(QObject):
         )
         self._hotkey_listener = GlobalHotkeyListener(
             on_toggle_overlay=self._hotkey_signals.toggle_requested.emit,
-            on_send_text=self._hotkey_signals.send_text_requested.emit,
-            on_send_image=self._hotkey_signals.send_image_requested.emit,
+            on_cancel=self._hotkey_signals.cancel_requested.emit,
         )
 
         self._monitoring_enabled = False
@@ -295,10 +310,19 @@ class ClipboardOverlayController(QObject):
         self._last_seen_fingerprint: str | None = None
         self._last_submitted_fingerprint: str | None = None
         self._last_submitted_at = 0.0
-        self._pending_request: PendingRequest | None = None
         self._preparation_worker: BatchPreparationWorker | None = None
         self._active_workers: dict[int, ResponseWorker] = {}
         self._active_batch: AnswerBatch | None = None
+        self._recent_questions = RecentQuestions()
+        self._generation = 0
+        # (kind, content, when) of the last clipboard item skipped as a repeat.
+        self._last_skipped: tuple[str, object, float] | None = None
+        self._last_answer_text = ""
+        self._retired_pools: list[QThreadPool] = []
+        self._clipboard_settle_timer = QTimer(self)
+        self._clipboard_settle_timer.setSingleShot(True)
+        self._clipboard_settle_timer.setInterval(_CLIPBOARD_SETTLE_MS)
+        self._clipboard_settle_timer.timeout.connect(self._process_clipboard)
 
         self._status_reporter("[STARTUP] Checking system tray availability.")
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -306,14 +330,13 @@ class ClipboardOverlayController(QObject):
 
         self._clipboard.dataChanged.connect(self._handle_clipboard_change)
         self._hotkey_signals.toggle_requested.connect(self.toggle_overlay_visibility)
-        self._hotkey_signals.send_text_requested.connect(self.send_selected_text_now)
-        self._hotkey_signals.send_image_requested.connect(self.send_clipboard_image_now)
+        self._hotkey_signals.cancel_requested.connect(self.cancel_current)
         self._tray.show()
         self._tray.set_enabled(False)
         self._status_reporter("[STARTUP] Tray icon is visible.")
         self._hotkey_listener.start()
         if self._hotkey_listener.is_supported:
-            self._status_reporter("[STARTUP] Global hotkeys are enabled (Left Shift, R, and A).")
+            self._status_reporter("[STARTUP] Global hotkeys enabled (Left Shift hides/shows the overlay, H cancels the running answer).")
         elif self._hotkey_listener.reason:
             self._status_reporter(f"[STARTUP] Global hotkeys unavailable: {self._hotkey_listener.reason}")
 
@@ -332,7 +355,7 @@ class ClipboardOverlayController(QObject):
         if self._hotkey_listener.is_supported:
             self._tray.notify(
                 "Clipboard AI Overlay",
-                "Press Left Shift to hide/show overlay. Press R to send text or A to send a clipboard image.",
+                "Copy text or take a screenshot to get an answer. Left Shift hides/shows the overlay, H cancels.",
             )
         elif self._hotkey_listener.reason:
             self._tray.notify("Clipboard AI Overlay", self._hotkey_listener.reason)
@@ -359,13 +382,8 @@ class ClipboardOverlayController(QObject):
         self._status_reporter(f"[MONITORING] {message}")
 
     def send_selected_text_now(self) -> None:
-        self._status_reporter("[SEND] R pressed; sending text only.")
-        selection_text = self._clipboard.text(QClipboard.Mode.Selection)
-        if selection_text.strip():
-            self._status_reporter("[SEND] Sending selected text.")
-            self._submit_text_if_allowed(selection_text, force=True)
-            return
-
+        """Tray action: resend the clipboard text even if it was just answered."""
+        self._status_reporter("[SEND] Manual resend of clipboard text.")
         text = self._clipboard.text(QClipboard.Mode.Clipboard)
         if text.strip():
             self._status_reporter("[SEND] Sending clipboard text.")
@@ -375,7 +393,7 @@ class ClipboardOverlayController(QObject):
         self._overlay.show_error("Khong co van ban de gui.", timeout_ms=4000)
 
     def send_clipboard_image_now(self) -> None:
-        self._status_reporter("[SEND] A pressed; sending clipboard image only.")
+        self._status_reporter("[SEND] Manual resend of clipboard image.")
         image = self._clipboard.image(QClipboard.Mode.Clipboard)
         if not image.isNull():
             self._status_reporter("[SEND] Sending clipboard image.")
@@ -384,6 +402,82 @@ class ClipboardOverlayController(QObject):
 
         self._status_reporter("[SKIP] No image in clipboard; nothing to send.")
         self._overlay.show_error("Khong co anh trong clipboard de gui.", timeout_ms=4000)
+
+    def cancel_current(self) -> None:
+        """H: cancel what is running, or send the item that was just skipped.
+
+        * Busy: drop the running batch, so the next copy or screenshot runs.
+          Nothing is queued while busy: H must come first.
+        * Idle, shortly after a copy was skipped as a repeat: the skip was a
+          mistake, so send that item now.
+        * Otherwise nothing: H is a plain letter and typing it must stay harmless.
+        """
+        if not self._busy:
+            self._send_last_skipped()
+            return
+
+        cancelled_generation = self._generation
+        self._generation += 1
+        # Let the user re-send the same content right away after a cancel.
+        self._recent_questions.forget(cancelled_generation)
+        self._last_seen_fingerprint = None
+        self._last_submitted_fingerprint = None
+        self._retire_thread_pool()
+        self._progress_timer.stop()
+        self._preparation_worker = None
+        self._active_batch = None
+        self._active_workers.clear()
+        self._busy = False
+        self._tray.set_busy(False)
+        self._tray.set_enabled(self._monitoring_enabled)
+        self._status_reporter("[CANCEL] H pressed; running answer cancelled.")
+        self._overlay.show_error("Đã hủy. Copy hoặc chụp câu mới.", timeout_ms=2500)
+
+    def _remember_skip(self, kind: str, content: object) -> None:
+        self._last_skipped = (kind, content, time.monotonic())
+        if self._busy:
+            return  # the progress lines stay on screen; the log says why
+        # Show the answer already given again, with a hint, so a skip is never
+        # silent and H is one key away if the match was wrong.
+        hint = "(Trùng câu vừa trả lời — bấm H để gửi lại)"
+        self._overlay.show_response(f"{self._last_answer_text}\n{hint}" if self._last_answer_text else hint)
+
+    def _ignore_while_busy(self) -> None:
+        """New content while a question runs is dropped, not queued.
+
+        Queueing let a mistaken screenshot finish and then replaced its answer
+        with the next one; the user decides with H instead. The content is not
+        marked as seen, so copying it again after H sends it.
+        """
+        self._status_reporter("[SKIP] Busy; new clipboard content ignored. Press H to cancel first.")
+        batch = self._active_batch
+        if batch is None:
+            return
+        batch.footer = _BUSY_HINT
+        if batch.question_count:
+            self._overlay.show_batch_progress(batch.progress_text(time.monotonic()))
+        else:
+            self._overlay.show_running(f"{_DETECTING_TEXT}\n{_BUSY_HINT}")
+
+    def _send_last_skipped(self) -> None:
+        skipped = self._last_skipped
+        self._last_skipped = None
+        if skipped is None or time.monotonic() - skipped[2] > _FORCE_SKIPPED_WINDOW_S:
+            return
+        kind, content, _at = skipped
+        self._status_reporter(f"[SEND] H pressed; sending the skipped {kind} anyway.")
+        if kind == "text":
+            self._submit_text_if_allowed(content, force=True)
+        else:
+            self._submit_image_if_allowed(content, force=True)
+
+    def _retire_thread_pool(self) -> None:
+        """Give the next batch fresh threads instead of queueing behind orphans."""
+        self._thread_pool.clear()  # drops questions that had not started yet
+        self._retired_pools = [pool for pool in self._retired_pools if pool.activeThreadCount() > 0]
+        self._retired_pools.append(self._thread_pool)
+        self._thread_pool = QThreadPool(self)
+        self._thread_pool.setMaxThreadCount(max(1, self._config.max_parallel_questions))
 
     def toggle_overlay_visibility(self) -> None:
         visible = self._overlay.toggle_visibility()
@@ -410,14 +504,31 @@ class ClipboardOverlayController(QObject):
     def _handle_clipboard_change(self) -> None:
         if not self._monitoring_enabled:
             return
+        # Restarting the timer coalesces a burst of change signals into one read.
+        self._clipboard_settle_timer.start()
+
+    def _process_clipboard(self) -> None:
+        if not self._monitoring_enabled:
+            return
+        if self._busy:
+            # A late change signal for the item already running is not new content.
+            busy_text = self._clipboard.text(QClipboard.Mode.Clipboard)
+            if not (busy_text and _fingerprint(busy_text) == self._last_seen_fingerprint):
+                self._ignore_while_busy()
+            return
+
+        # Text wins when both are present: office apps and browsers attach a
+        # rendered picture to copied text, while screenshot tools put only an
+        # image on the clipboard.
+        text = self._clipboard.text(QClipboard.Mode.Clipboard)
+        if text.strip():
+            self._submit_text_if_allowed(text, force=False)
+            return
 
         image = self._clipboard.image(QClipboard.Mode.Clipboard)
         if not image.isNull():
-            self._status_reporter("[MONITORING] Clipboard image detected; waiting for A to send it.")
-            return
-
-        text = self._clipboard.text(QClipboard.Mode.Clipboard)
-        self._submit_text_if_allowed(text, force=False)
+            self._status_reporter("[MONITORING] Clipboard image detected; sending it automatically.")
+            self._submit_image_if_allowed(image, force=False)
 
     def _submit_text_if_allowed(self, text: str, force: bool) -> None:
         if not text:
@@ -425,7 +536,8 @@ class ClipboardOverlayController(QObject):
 
         fingerprint = _fingerprint(text)
         if not force and fingerprint == self._last_seen_fingerprint:
-            self._status_reporter("[SKIP] Clipboard text already seen; not sending again.")
+            self._status_reporter("[SKIP] Clipboard text already seen; not sending again. Press H to send anyway.")
+            self._remember_skip("text", text)
             return
         self._last_seen_fingerprint = fingerprint
 
@@ -438,12 +550,18 @@ class ClipboardOverlayController(QObject):
 
         payload_fingerprint = _fingerprint(payload.text)
         if not force and self._is_duplicate_recent(payload_fingerprint):
-            self._status_reporter("[SKIP] Same text already submitted within dedup window.")
+            self._status_reporter("[SKIP] Same text already submitted within dedup window. Press H to send anyway.")
+            self._remember_skip("text", text)
+            return
+        if not force and self._recent_questions.is_repeat(payload.text):
+            self._status_reporter(
+                "[SKIP] Copied text matches a question answered moments ago. Press H to send anyway."
+            )
+            self._remember_skip("text", text)
             return
 
         if self._busy:
-            self._status_reporter("[QUEUE] Busy; keeping this text as the pending request.")
-            self._pending_request = PendingRequest(payload=payload, fingerprint=payload_fingerprint)
+            self._ignore_while_busy()
             return
 
         self._dispatch_payload(payload, payload_fingerprint)
@@ -458,12 +576,12 @@ class ClipboardOverlayController(QObject):
 
         payload_fingerprint = _fingerprint(payload.png_bytes)
         if not force and self._is_duplicate_recent(payload_fingerprint):
-            self._status_reporter("[SKIP] Same image already submitted within dedup window.")
+            self._status_reporter("[SKIP] Same image already submitted within dedup window. Press H to send anyway.")
+            self._remember_skip("image", image)
             return
 
         if self._busy:
-            self._status_reporter("[QUEUE] Busy; keeping this image as the pending request.")
-            self._pending_request = PendingRequest(payload=payload, fingerprint=payload_fingerprint)
+            self._ignore_while_busy()
             return
 
         self._dispatch_payload(payload, payload_fingerprint)
@@ -489,24 +607,27 @@ class ClipboardOverlayController(QObject):
             return
 
         self._busy = True
+        self._last_skipped = None
         self._last_submitted_fingerprint = fingerprint
         self._last_submitted_at = time.monotonic()
         self._active_batch = AnswerBatch()
         self._progress_timer.start()
         self._tray.set_busy(True)
-        self._overlay.show_running("ĐANG NHẬN DIỆN CÂU HỎI...")
+        self._overlay.show_running(_DETECTING_TEXT)
         self._app.processEvents()
 
         kind = "image" if isinstance(payload, PreparedClipboardImage) else "text"
         self._status_reporter(f"[DISPATCH] Preparing {kind} question(s) for the AI service.")
-        worker = BatchPreparationWorker(self._client, payload)
+        worker = BatchPreparationWorker(self._client, payload, self._generation)
         self._preparation_worker = worker
         worker.signals.detected.connect(self._handle_questions_detected)
         worker.signals.finished.connect(self._handle_batch_prepared)
         worker.signals.failed.connect(self._handle_preparation_error)
         self._thread_pool.start(worker)
 
-    def _handle_questions_detected(self, questions_object: object) -> None:
+    def _handle_questions_detected(self, generation: int, questions_object: object) -> None:
+        if generation != self._generation:
+            return
         batch = self._active_batch
         if batch is None:
             return
@@ -518,10 +639,16 @@ class ClipboardOverlayController(QObject):
             return
 
         batch.detected_questions = list(questions_object)
+        self._recent_questions.remember(
+            (question.text for question in batch.detected_questions),
+            key=generation,
+        )
         self._status_reporter(f"[PREPARE] Detected {batch.question_count} question(s).")
         self._overlay.show_batch_progress(batch.progress_text())
 
-    def _handle_batch_prepared(self, questions_object: object) -> None:
+    def _handle_batch_prepared(self, generation: int, questions_object: object) -> None:
+        if generation != self._generation:
+            return
         self._preparation_worker = None
         if not isinstance(questions_object, list) or not questions_object:
             self._finish_batch_with_error("Không nhận diện được câu hỏi để gửi.")
@@ -548,14 +675,16 @@ class ClipboardOverlayController(QObject):
         )
 
         for index, question in enumerate(questions):
-            worker = ResponseWorker(self._client, index, question)
+            worker = ResponseWorker(self._client, index, question, generation)
             self._active_workers[index] = worker
             worker.signals.finished.connect(self._handle_question_result)
             worker.signals.failed.connect(self._handle_question_error)
             worker.signals.progress.connect(self._handle_question_progress)
             self._thread_pool.start(worker)
 
-    def _handle_question_progress(self, index: int, message: str) -> None:
+    def _handle_question_progress(self, generation: int, index: int, message: str) -> None:
+        if generation != self._generation:
+            return
         batch = self._active_batch
         if batch is None or index < 0 or index >= batch.question_count or index in batch.lines_by_index:
             return
@@ -571,11 +700,15 @@ class ClipboardOverlayController(QObject):
             return
         self._overlay.show_batch_progress(batch.progress_text(time.monotonic()))
 
-    def _handle_preparation_error(self, error_text: str) -> None:
+    def _handle_preparation_error(self, generation: int, error_text: str) -> None:
+        if generation != self._generation:
+            return
         self._preparation_worker = None
         self._finish_batch_with_error(error_text)
 
-    def _handle_question_result(self, index: int, text: str, elapsed_s: float) -> None:
+    def _handle_question_result(self, generation: int, index: int, text: str, elapsed_s: float) -> None:
+        if generation != self._generation:
+            return
         batch = self._active_batch
         if batch is None or index < 0 or index >= batch.question_count:
             return
@@ -589,7 +722,9 @@ class ClipboardOverlayController(QObject):
         self._status_reporter(f"[RESULT] {status_label} completed ({elapsed_s:.1f}s)")
         self._record_question_completion(batch, index, line)
 
-    def _handle_question_error(self, index: int, error_text: str, elapsed_s: float) -> None:
+    def _handle_question_error(self, generation: int, index: int, error_text: str, elapsed_s: float) -> None:
+        if generation != self._generation:
+            return
         batch = self._active_batch
         if batch is None or index < 0 or index >= batch.question_count:
             return
@@ -610,7 +745,8 @@ class ClipboardOverlayController(QObject):
 
         # Once every line is final, resume the normal response timer. Until
         # this point ``show_batch_progress`` intentionally stays visible.
-        self._overlay.show_response(batch.progress_text())
+        self._last_answer_text = batch.progress_text()
+        self._overlay.show_response(self._last_answer_text)
         self._finish_batch()
 
     def _finish_batch_with_error(self, error_text: str) -> None:
@@ -626,21 +762,9 @@ class ClipboardOverlayController(QObject):
         self._busy = False
         self._tray.set_busy(False)
         self._tray.set_enabled(self._monitoring_enabled)
-        self._flush_pending()
-
-    def _flush_pending(self) -> None:
-        if not self._pending_request:
-            return
-        pending_payload = self._pending_request.payload
-        pending_fingerprint = self._pending_request.fingerprint
-        self._pending_request = None
-        if self._is_duplicate_recent(pending_fingerprint):
-            self._status_reporter("[SKIP] Pending request duplicates the last submission.")
-            return
-        self._status_reporter("[QUEUE] Sending the pending request now.")
-        self._dispatch_payload(pending_payload, pending_fingerprint)
 
     def _quit(self) -> None:
+        self._clipboard_settle_timer.stop()
         self._hotkey_listener.stop()
         self._overlay.clear()
         self._app.quit()
